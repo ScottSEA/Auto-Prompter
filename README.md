@@ -11,8 +11,8 @@ Compose screen that runs unchanged on Android and in the browser.
 
 | Module        | Type                              | Responsibility |
 |---------------|-----------------------------------|----------------|
-| `:core`       | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain and the public `ScriptFollower` follow interface. |
-| `:ui`         | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen. Calls `:core` for all alignment; holds none of its own. |
+| `:core`       | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain, the public `ScriptFollower` follow interface, and the pure `reducePromptSession` session state machine. |
+| `:ui`         | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen. Dispatches all intent through `:core`'s reducer; holds no alignment or mode logic of its own. |
 | `:androidApp` | Android application                | Android launcher (`MainActivity`) hosting the shared screen. |
 | `:webApp`     | Kotlin/Wasm Compose executable     | Browser composition root serving the shared screen. |
 
@@ -41,12 +41,31 @@ well-supported multi-token chain wins over a higher-scoring but unsupported lone
 It is deliberately **not** yet the confidence-weighted, timing-aware, rare-token recovery engine
 with acquire/retain hysteresis described in the architecture proposal. Those, along with
 stable-vs-tentative token handling and fuzzy/phonetic matching, remain later milestones; the scope
-is named accordingly in `ScriptFollower.kt`. The shared tracer screen exercises the engine through
-named scenarios (continuation, ad-lib insertion, skipped words, repeated phrase), and 16 core
-behavior tests in `:core:jvmTest` pin these behaviors plus the state bounds. The aligner runs a
+is named accordingly in `ScriptFollower.kt`. The aligner runs a
 bounded O(H*W) dynamic program (H hypothesis tokens, W the fixed local window), using rolling
 primitive arrays with no per-candidate allocation, so cost stays flat per update regardless of
 script length.
+
+## The prompt-session reducer
+
+Session behavior lives in shared code as a pure state machine, not in ad-hoc UI mutations.
+`PromptSessionState` is immutable and carries the `Script`, the committed follow position, and an
+explicit `FollowMode` (`Following` or `ManualHold`). `reducePromptSession(state, action)` is a pure
+top-level reducer over a sealed `PromptSessionAction` vocabulary that models domain intent rather
+than hardware keys, so a presentation remote, a touch gesture, and a keyboard all map onto the same
+commands. This milestone's actions are: `SpeechHeard` (advance via `scriptFollower` while
+following), `SeekTo` (jump to an exact token position and hold), `ResumeFollowing`, `NudgeForward`
+/ `NudgeBackward` (one-token presentation-remote steps that hold), `ToggleFollow`, and `Reset`.
+Following ignores speech while held, resume continues from the manually chosen anchor, nudges stay
+within `0..tokenCount`, and an out-of-range `SeekTo` fails fast with an informative
+`IllegalArgumentException` rather than silently clamping. The shared tracer screen drives every
+transition through this reducer and shows the current mode, so the UI cannot drift from the engine.
+
+The shared tracer screen exercises both layers through named scenarios (continuation, ad-lib
+insertion, skipped words, repeated phrase). 24 core behavior tests in `:core:jvmTest` pin these
+behaviors: 16 aligner tests plus the state bounds, and 8 reducer tests covering following,
+manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement. A shared UI-model test
+also pins the Reset button's reducer wiring.
 
 ## Toolchain
 
@@ -65,8 +84,8 @@ The Gradle wrapper downloads its pinned distribution on first run.
 Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 
 ```bash
-# Shared core behavior tests (fast, off-device)
-./gradlew :core:jvmTest
+# Shared core and UI-model behavior tests (fast, off-device)
+./gradlew :core:jvmTest :ui:jvmTest
 
 # Android debug APK -> androidApp/build/outputs/apk/debug/
 ./gradlew :androidApp:assembleDebug

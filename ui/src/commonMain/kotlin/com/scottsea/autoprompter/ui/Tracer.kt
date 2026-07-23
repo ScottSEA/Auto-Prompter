@@ -1,25 +1,26 @@
 package com.scottsea.autoprompter.ui
 
-import com.scottsea.autoprompter.core.FollowState
-import com.scottsea.autoprompter.core.Script
+import com.scottsea.autoprompter.core.PromptSessionAction
+import com.scottsea.autoprompter.core.PromptSessionState
 import com.scottsea.autoprompter.core.hypothesisOf
 import com.scottsea.autoprompter.core.parseScript
-import com.scottsea.autoprompter.core.scriptFollower
+import com.scottsea.autoprompter.core.reducePromptSession
+import com.scottsea.autoprompter.core.startPromptSession
 
 /**
  * Immutable state for the diagnostic tracer screen.
  *
- * The tracer feeds a scripted sequence of simulated recognizer hypotheses into the core
- * follow interface. It holds no alignment logic of its own; following always comes from
- * [com.scottsea.autoprompter.core.scriptFollower], so the UI cannot drift from the engine.
+ * The tracer feeds a scripted sequence of simulated recognizer hypotheses and manual commands
+ * into the shared [PromptSessionState] reducer. It holds no alignment, following, or mode logic
+ * of its own: every transition goes through
+ * [com.scottsea.autoprompter.core.reducePromptSession], so the UI cannot drift from the engine.
  */
 data class TracerModel(
     val scenarioIndex: Int,
-    val script: Script,
     val steps: List<String>,
     val stepIndex: Int,
     val hypothesisText: String,
-    val follow: FollowState,
+    val session: PromptSessionState,
 )
 
 /**
@@ -81,22 +82,20 @@ fun tracerScenarioNames(): List<String> = SCENARIOS.map { it.name }
 
 fun initialTracerModel(): TracerModel = selectScenario(0)
 
-/** Switches to the scenario at [index] and primes its first hypothesis. */
+/** Switches to the scenario at [index], starting a fresh prompt session and priming its first hypothesis. */
 fun selectScenario(index: Int): TracerModel {
     val scenario = SCENARIOS[index]
-    val script = parseScript(scenario.scriptText)
     val base = TracerModel(
         scenarioIndex = index,
-        script = script,
         steps = scenario.steps,
         stepIndex = 0,
         hypothesisText = "",
-        follow = FollowState.START,
+        session = startPromptSession(parseScript(scenario.scriptText)),
     )
     return applyHypothesis(base, scenario.steps.first(), stepIndex = 0)
 }
 
-/** Advances to the next simulated hypothesis and re-follows. */
+/** Advances to the next simulated hypothesis and dispatches it as speech. */
 fun advance(model: TracerModel): TracerModel {
     val nextIndex = (model.stepIndex + 1).coerceAtMost(model.steps.lastIndex)
     return applyHypothesis(model, model.steps[nextIndex], nextIndex)
@@ -108,13 +107,29 @@ fun revise(model: TracerModel): TracerModel {
     return applyHypothesis(model, shorter, model.stepIndex)
 }
 
-fun reset(model: TracerModel): TracerModel = selectScenario(model.scenarioIndex)
+/** Presentation-remote nudge one token forward (enters manual hold). */
+fun nudgeForward(model: TracerModel): TracerModel = dispatch(model, PromptSessionAction.NudgeForward)
 
-private fun applyHypothesis(model: TracerModel, text: String, stepIndex: Int): TracerModel {
-    val follower = scriptFollower(model.script)
-    return model.copy(
+/** Presentation-remote nudge one token backward (enters manual hold). */
+fun nudgeBackward(model: TracerModel): TracerModel = dispatch(model, PromptSessionAction.NudgeBackward)
+
+/** Toggles between following speech and holding at the current anchor. */
+fun toggleFollow(model: TracerModel): TracerModel = dispatch(model, PromptSessionAction.ToggleFollow)
+
+/** Resets the current session and clears simulated recognizer progress. */
+fun reset(model: TracerModel): TracerModel =
+    model.copy(
+        stepIndex = -1,
+        hypothesisText = "",
+        session = reducePromptSession(model.session, PromptSessionAction.Reset),
+    )
+
+private fun applyHypothesis(model: TracerModel, text: String, stepIndex: Int): TracerModel =
+    model.copy(
         stepIndex = stepIndex,
         hypothesisText = text,
-        follow = follower.follow(model.follow, hypothesisOf(text)),
+        session = reducePromptSession(model.session, PromptSessionAction.SpeechHeard(hypothesisOf(text))),
     )
-}
+
+private fun dispatch(model: TracerModel, action: PromptSessionAction): TracerModel =
+    model.copy(session = reducePromptSession(model.session, action))

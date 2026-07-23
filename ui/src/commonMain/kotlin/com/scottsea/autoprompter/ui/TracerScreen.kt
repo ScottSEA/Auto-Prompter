@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -28,6 +27,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.scottsea.autoprompter.core.FollowMode
 import com.scottsea.autoprompter.core.coveredText
 import com.scottsea.autoprompter.core.progressIn
 import com.scottsea.autoprompter.core.remainingText
@@ -48,9 +48,11 @@ fun TracerApp() {
 fun TracerScreen() {
     var model by remember { mutableStateOf(initialTracerModel()) }
 
-    val committed = model.follow.committedTokens
-    val total = model.script.tokenCount
-    val percent = (model.follow.progressIn(model.script) * 100).roundToInt()
+    val committed = model.session.follow.committedTokens
+    val total = model.session.script.tokenCount
+    val percent = (model.session.follow.progressIn(model.session.script) * 100).roundToInt()
+    val following = model.session.mode == FollowMode.Following
+    val modeLabel = if (following) "Following speech" else "Manual hold"
 
     Column(
         modifier = Modifier
@@ -98,15 +100,24 @@ fun TracerScreen() {
             }
         }
 
+        Text("Mode: $modeLabel", style = MaterialTheme.typography.titleSmall)
         Text("Followed position: $committed / $total tokens ($percent%)")
         LinearProgressIndicator(
-            progress = { model.follow.progressIn(model.script) },
+            progress = { model.session.follow.progressIn(model.session.script) },
             modifier = Modifier.fillMaxWidth(),
         )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Button(onClick = { model = advance(model) }) { Text("Advance") }
             OutlinedButton(onClick = { model = revise(model) }) { Text("Revise shorter") }
+            OutlinedButton(onClick = { model = nudgeBackward(model) }) { Text("Nudge back") }
+            OutlinedButton(onClick = { model = nudgeForward(model) }) { Text("Nudge forward") }
+            OutlinedButton(onClick = { model = toggleFollow(model) }) {
+                Text(if (following) "Hold" else "Resume")
+            }
             OutlinedButton(onClick = { model = reset(model) }) { Text("Reset") }
         }
     }
@@ -114,8 +125,8 @@ fun TracerScreen() {
 
 /** Renders the script with the followed (spoken) prefix emphasized. */
 private fun scriptWithProgress(model: TracerModel) = buildAnnotatedString {
-    val covered = model.script.coveredText(model.follow)
-    val remaining = model.script.remainingText(model.follow)
+    val covered = model.session.script.coveredText(model.session.follow)
+    val remaining = model.session.script.remainingText(model.session.follow)
     if (covered.isNotEmpty()) {
         withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(covered) }
     }

@@ -10,6 +10,8 @@ plugins {
 }
 
 kotlin {
+    jvm()
+
     androidLibrary {
         namespace = "com.scottsea.autoprompter.ui"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
@@ -31,6 +33,9 @@ kotlin {
             implementation(libs.compose.foundation)
             implementation(libs.compose.material3)
             implementation(libs.compose.ui)
+        }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
         }
     }
 }
