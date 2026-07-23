@@ -1,0 +1,13 @@
+package com.scottsea.autoprompter
+
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.window.ComposeViewport
+import com.scottsea.autoprompter.ui.TracerApp
+import kotlinx.browser.document
+
+@OptIn(ExperimentalComposeUiApi::class)
+fun main() {
+    ComposeViewport(document.body!!) {
+        TracerApp()
+    }
+}
