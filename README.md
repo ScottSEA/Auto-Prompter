@@ -27,11 +27,26 @@ targets are `androidLibrary` and `wasmJs`.
 
 ## What the follow engine does today
 
-`prefixScriptFollower(script)` is an **exact-prefix tracer**: it advances by the length of the
-exact leading match between the normalized script and the recognizer hypothesis, and it never lets
-committed progress slide backwards when a hypothesis is revised shorter. It is deliberately **not**
-the banded fuzzy alignment, confidence, hysteresis, or recovery engine described in the
-architecture proposal; the status is named accordingly in `ScriptFollower.kt`.
+`scriptFollower(script)` is a **deterministic local aligner**. For each recognizer hypothesis it
+fits the spoken tokens to the script inside a bounded window around committed progress, scoring
+exact matches against ad-lib insertions (extra spoken words) and skipped script words, and biasing
+toward the speaker's current location. It handles: continuing a new utterance from committed
+progress; short ad-libs that should not stall progress; skipped script words when surrounding
+tokens corroborate the jump; a phrase repeated later in the script (resolving to the nearest
+forward occurrence, never backwards); revised/shorter partials, which never regress committed
+progress; and withholding a broad jump when evidence is thin -- a lone matched token is trusted
+only when it sits exactly at committed progress, and candidate alignments are ranked so a
+well-supported multi-token chain wins over a higher-scoring but unsupported lone match.
+
+It is deliberately **not** yet the confidence-weighted, timing-aware, rare-token recovery engine
+with acquire/retain hysteresis described in the architecture proposal. Those, along with
+stable-vs-tentative token handling and fuzzy/phonetic matching, remain later milestones; the scope
+is named accordingly in `ScriptFollower.kt`. The shared tracer screen exercises the engine through
+named scenarios (continuation, ad-lib insertion, skipped words, repeated phrase), and 16 core
+behavior tests in `:core:jvmTest` pin these behaviors plus the state bounds. The aligner runs a
+bounded O(H*W) dynamic program (H hypothesis tokens, W the fixed local window), using rolling
+primitive arrays with no per-candidate allocation, so cost stays flat per update regardless of
+script length.
 
 ## Toolchain
 

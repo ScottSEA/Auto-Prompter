@@ -2,6 +2,8 @@ package com.scottsea.autoprompter.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -41,6 +43,7 @@ fun TracerApp() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TracerScreen() {
     var model by remember { mutableStateOf(initialTracerModel()) }
@@ -61,6 +64,19 @@ fun TracerScreen() {
             "Architecture tracer bullet: shared core alignment rendered on Android and web.",
             style = MaterialTheme.typography.bodySmall,
         )
+
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            tracerScenarioNames().forEachIndexed { index, name ->
+                if (index == model.scenarioIndex) {
+                    Button(onClick = { model = selectScenario(index) }) { Text(name) }
+                } else {
+                    OutlinedButton(onClick = { model = selectScenario(index) }) { Text(name) }
+                }
+            }
+        }
 
         Card {
             Column(
@@ -91,7 +107,7 @@ fun TracerScreen() {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { model = advance(model) }) { Text("Advance") }
             OutlinedButton(onClick = { model = revise(model) }) { Text("Revise shorter") }
-            OutlinedButton(onClick = { model = reset() }) { Text("Reset") }
+            OutlinedButton(onClick = { model = reset(model) }) { Text("Reset") }
         }
     }
 }
