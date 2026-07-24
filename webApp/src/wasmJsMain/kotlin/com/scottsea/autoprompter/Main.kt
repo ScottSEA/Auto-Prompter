@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.ComposeViewport
 import com.scottsea.autoprompter.ui.TracerApp
+import com.scottsea.autoprompter.webspeech.browserLiveSpeechRuntime
 import com.scottsea.autoprompter.webstore.IndexedDbDocumentStore
 import com.scottsea.autoprompter.webstore.openIndexedDbDocumentStore
 import kotlinx.browser.document
@@ -42,6 +43,12 @@ fun main() {
     val bootstrapScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val state = mutableStateOf<BootstrapState>(BootstrapState.Opening)
 
+    // The browser live speech runtime is feature-detected once here (unprefixed SpeechRecognition,
+    // then webkitSpeechRecognition). On a browser without it, this returns an explicit unsupported
+    // runtime; either way the tracer's live speech card degrades honestly. It owns its own mic and
+    // is online / vendor-dependent -- see the README live speech section.
+    val speech = browserLiveSpeechRuntime()
+
     bootstrapScope.launch {
         try {
             val store = openIndexedDbDocumentStore()
@@ -61,6 +68,7 @@ fun main() {
         when (val current = state.value) {
             is BootstrapState.Ready -> TracerApp(
                 store = current.store,
+                speech = speech,
                 onStoreFailure = { failure ->
                     state.value = BootstrapState.Failed(
                         "Local database operation failed: " +

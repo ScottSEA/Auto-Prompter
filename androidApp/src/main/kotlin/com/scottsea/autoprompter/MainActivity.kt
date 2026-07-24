@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.scottsea.autoprompter.roomstore.RoomDocumentStore
 import com.scottsea.autoprompter.roomstore.createRoomDocumentStore
+import com.scottsea.autoprompter.core.speech.UnsupportedLiveSpeechRuntime
 import com.scottsea.autoprompter.ui.TracerApp
 
 class MainActivity : ComponentActivity() {
@@ -21,12 +22,20 @@ class MainActivity : ComponentActivity() {
     // seam without changing the DocumentStore contract.
     private lateinit var store: RoomDocumentStore
 
+    // Android has no live speech runtime in this build. We inject an explicit *unsupported* runtime
+    // rather than the platform SpeechRecognizer or a fake: it advertises supported=false with a
+    // reason, requests no microphone, and never emits hypotheses. The offline on-device runtime
+    // (sherpa-onnx + AudioRecord) arrives in a later slice behind this same seam.
+    private val speech = UnsupportedLiveSpeechRuntime(
+        "Offline Android speech runtime not installed in this build.",
+    )
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = createRoomDocumentStore(applicationContext)
         enableEdgeToEdge()
         setContent {
-            TracerApp(store)
+            TracerApp(store, speech)
         }
     }
 

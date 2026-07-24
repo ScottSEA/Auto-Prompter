@@ -15,20 +15,22 @@ Compose screen that runs unchanged on Android and in the browser.
 | `:storeContractTest` | KMP test-support library (jvm, android, wasmJs) | Owns the nine reusable `DocumentStore` contract behaviors as ordinary functions so every adapter runs the exact same assertions. Test-only support; nothing production depends on it. |
 | `:roomStore`         | KMP library (jvm, androidLibrary) | Durable Room 3 / SQLite `RoomDocumentStore` adapter for the `DocumentStore` seam, plus its `jvm()` / Android factory functions. Depends inward on `:core`; keeps Room/KSP codegen out of `:core` and `:ui`. |
 | `:webStore`          | KMP library (wasmJs) | Durable browser `IndexedDbDocumentStore` adapter for the `DocumentStore` seam over **IndexedDB** (via `com.juul.indexeddb`), plus its suspend `openIndexedDbDocumentStore(...)` factory. Depends inward on `:core`; keeps IndexedDB/JS interop out of `:core` and `:ui`. |
-| `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen with a diagnostic document-editor section. Dispatches all intent through `:core`'s reducers and takes an injected `DocumentStore`; holds no alignment, mode, editing, or store-construction logic of its own. |
-| `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store and hosts the shared screen. |
-| `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that opens the durable IndexedDB store and serves the shared screen. |
+| `:webSpeech`         | KMP library (wasmJs) | Capability-detected browser `LiveSpeechRuntime` adapter over the vendor **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`), plus its `browserLiveSpeechRuntime()` factory. Maps `onstart`/`onresult`/`onerror`/`onend` to the shared `SpeechEvent` stream behind an internal engine seam; no Web Speech types escape. Depends inward on `:core` only. |
+| `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen with a diagnostic document-editor section and a diagnostic live-speech card. Dispatches all intent through `:core`'s reducers and takes an injected `DocumentStore` and `LiveSpeechRuntime`; holds no alignment, mode, editing, store-construction, or speech-recognition logic of its own. |
+| `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, injects an explicit `UnsupportedLiveSpeechRuntime`, and hosts the shared screen. |
+| `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that opens the durable IndexedDB store, feature-detects and injects `browserLiveSpeechRuntime()`, and serves the shared screen. |
 
 Adapters (`:androidApp`, `:webApp`) depend inward on `:ui` -> `:core`; `:androidApp` also
-depends on `:roomStore` -> `:core`, and `:webApp` depends on `:webStore` -> `:core`. `:roomStore`
-and `:webStore` depend only on `:core`; `:core` never depends outward on Room or IndexedDB.
+depends on `:roomStore` -> `:core`, and `:webApp` depends on `:webStore` -> `:core` and
+`:webSpeech` -> `:core`. `:roomStore`, `:webStore`, and `:webSpeech` depend only on `:core`;
+`:core` never depends outward on Room, IndexedDB, or the Web Speech API.
 `:storeContractTest` is consumed only by adapter test source sets.
 
 ### Why this shape
 
-The initial `:core` / `:ui` / launcher split remains intact. Two modules were added only where a
-real seam justified them: `:roomStore` isolates Room/KSP/native SQLite, `:webStore` isolates the
-IndexedDB/JS interop, while
+The initial `:core` / `:ui` / launcher split remains intact. Additional modules were added only
+where a real seam justified them: `:roomStore` isolates Room/KSP/native SQLite, `:webStore`
+isolates the IndexedDB/JS interop, `:webSpeech` isolates the browser Web Speech API interop, while
 `:storeContractTest` lets every adapter reuse one behavioral contract without shipping test code
 inside production core. `:core` adds a `jvm()` target purely so shared domain tests run fast
 off-device (`:core:jvmTest`); its shipped targets are `androidLibrary` and `wasmJs`.
@@ -71,12 +73,13 @@ transition through this reducer and shows the current mode, so the UI cannot dri
 
 The shared tracer screen exercises both layers through named scenarios (continuation, ad-lib
 insertion, skipped words, repeated phrase), and each scenario now originates from a canonical
-`ScriptDocument` (see below) rather than a raw string. 91 core behavior tests in `:core:jvmTest`
+`ScriptDocument` (see below) rather than a raw string. 129 core behavior tests in `:core:jvmTest`
 pin these behaviors: 16 aligner tests plus the state bounds, 8 reducer tests covering following,
 manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 document tests
 covering construction/validation, plain-text import, JSON round trip and error handling, and
 document-to-script conversion, 21 document-editor tests (see below), 9 `DocumentStore` contract
-tests, and 16 document-library reducer tests (both see below). 21 shared UI-model tests
+tests, 16 document-library reducer tests (both see below), and 38 live-speech
+capability/identity/error/lifecycle/fold tests. 29 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
 expected document identity/title and starts prompting from the document's converted `Script`,
 the diagnostic editor flow (editing marks the draft dirty, applying a valid draft restarts
@@ -84,7 +87,8 @@ prompting from the edited document, an invalid draft is not applicable), and the
 save/select/load/delete flow: a save creates generation 1 and only then returns the editor to
 clean, a second save advances to generation 2, a stale save conflicts and leaves the editor
 dirty with a typed store conflict, delete removes the entry, and loading a saved entry restarts
-the editor and prompt under a fresh session.
+the editor and prompt under a fresh session. Eight of those UI-model tests cover live lifecycle,
+partial/revised hypotheses, session restarts, manual hold, termination, and typed failures.
 
 ## The canonical script document
 
@@ -403,6 +407,97 @@ eviction under storage pressure or when the user clears site data; it is not a s
 Private/incognito sessions may clear IndexedDB when the session ends. These are properties of
 browser storage, not of this adapter.
 
+## Live speech following
+
+The tracer can follow **live** speech, not only simulated hypotheses. The seam lives in
+`:core` as a small, honestly-scoped set of interfaces:
+
+- `LiveSpeechRuntime` exposes a `SpeechCapability` and a `suspend fun open(plan): SpeechSession`.
+- `SpeechSession` is an `AutoCloseable` that exposes a replaying hot `Flow<SpeechEvent>`, a `suspend start()`
+  (start is explicit, never auto-fired on open, so the browser can call it from inside a user
+  gesture), a `suspend stop()`, and `close()`.
+- `SpeechEvent` is a sealed lifecycle: `Starting`, `Listening`, `Hypothesis`, `Ended(reason)`, and
+  `Failed(error)`. `SpeechEndReason` distinguishes a user-requested `StoppedByRequest` from an
+  unexpected `EndedUnexpectedly`. `SpeechError` is a typed set (`Unsupported`, `NotAllowed`,
+  `AudioCapture`, `Network`, `NoSpeech`, `Aborted`, `LanguageNotSupported`, `ServiceNotAllowed`,
+  `Unknown(raw)`).
+
+**This is deliberately named `LiveSpeechRuntime`, not `LiveSessionRuntime`.** It is speech-only.
+The KDoc records that it will later sit *inside* the combined live-session adapter once camera
+framing and capture/recording fan-out land; this slice adds none of that. No platform types
+(no `SpeechRecognition`, no JS, no Android) cross the `:core` boundary.
+
+**Identity and revision policy.** A session carries a stable `SpeechSessionId`; each spoken slot within a
+session gets a stable `UtteranceId`, and every change to that slot advances a strictly monotonic
+`Revision` (guarded `Long` values). A `Hypothesis` carries its utterance id, revision, raw
+transcript, `isFinal`, and an *optional* `SpeechConfidence` that is populated **only** when the
+vendor reports a finite value in `[0, 1]` -- otherwise it is `null`, never a fabricated number.
+A later revision **may shorten or change** the transcript; revisions are honoured as long as they
+advance. The pure `foldSpeechEvent` fold applies one documented policy: a `Hypothesis` for the same
+utterance whose revision does not advance the latest seen revision is **ignored**; a `Hypothesis`
+for a new utterance is always accepted and may restart at revision 0. Lifecycle and error events
+never move the prompt position -- they only update a small immutable `LiveSpeechState`
+(phase / last error / end reason / latest transcript). `ManualHold` continues to suppress speech
+through the existing prompt reducer, and shorter revisions can never regress committed progress
+because the aligner already guarantees that.
+
+### Browser adapter (`:webSpeech`)
+
+`browserLiveSpeechRuntime()` **feature-detects** the unprefixed `SpeechRecognition` first, then
+`webkitSpeechRecognition`. When neither exists it returns a capability with `supported = false` and
+a reason, and any attempt to `open`/`start` fails explicitly -- it never silently no-ops. When
+supported it configures `continuous = true`, `interimResults = true`, a caller-supplied `lang`, and
+`maxAlternatives = 1`, and maps the vendor callbacks deterministically behind an internal engine
+seam (so tests can drive it with no microphone):
+
+| Web Speech callback | Mapped to |
+|---------------------|-----------|
+| `start()` / `onstart` | `start()` emits `Starting`; `onstart` emits `Listening` |
+| `onresult` | one `Hypothesis` per **changed** result slot at/after `resultIndex`; each slot index is a stable `UtteranceId`, each change bumps that slot's `Revision`; best-alternative transcript + `isFinal`; confidence only when finite and in range |
+| `onerror`  | `Failed(<typed error>)` mapping the standard error strings; unknown strings become `Unknown(raw)` |
+| `onend`    | `Ended(StoppedByRequest)` if the user called `stop()`, else `Ended(EndedUnexpectedly)`; suppressed when `onerror` already made the session terminal |
+
+Result slots that did not change are **not** re-emitted, and slots before `resultIndex` are skipped.
+`no-speech` is surfaced as a terminal typed failure, consistently with the other recognizer errors;
+there is **no automatic restart loop** in this slice -- an unexpected `onend` emits `Ended` and the
+user starts again explicitly. A follow-up `onend` after any `onerror` is suppressed so `Failed`
+cannot be overwritten by a clean-looking end. The start/stop state machine rejects duplicate `start`, `stop`
+before `start`, and `start` after `close`; a second `stop` is an idempotent no-op. Handlers are
+detached exactly once on `close`, active recognition is aborted so the microphone is released, and
+no event can be emitted after `close`.
+
+**Browser limitations, privacy, and network.** The Web Speech API is **vendor-dependent and
+online in practice**: in the major engines recognition audio is streamed to a remote service, so it
+requires network connectivity and is subject to that vendor's availability and privacy handling.
+The browser -- not this app -- **owns the microphone** and prompts the user for permission. This
+runtime is therefore **not offline-guaranteed** (`offlineGuaranteed = false` in its capability),
+and the project makes **no claim of offline web speech support**.
+
+### Android adapter
+
+Android currently injects an explicit `UnsupportedLiveSpeechRuntime` whose capability is
+`supported = false` with the reason *"Offline Android speech runtime not installed in this build."*
+It **never requests the microphone and never emits fake hypotheses** -- the diagnostic card simply
+shows the reason and disables *Start listening*. This is honest about the state of the world:
+there is **no offline Android speech support in this build yet**, and no device was available to
+exercise a real recognizer (`adb devices` is empty in this environment, so physical
+`AudioRecord` / sherpa-onnx performance is unproven and is deliberately not simulated).
+
+The **next Android slice** is the real one: sherpa-onnx streaming ASR + `AudioRecord` capture +
+model download/lifecycle management, moved into a focused `:androidMedia` module, validated across
+a device matrix. Only then will Android report `supported = true`.
+
+### Tracer wiring and the diagnostic card
+
+`TracerApp` / `TracerScreen` now receive a `LiveSpeechRuntime` alongside the `DocumentStore`. The
+diagnostic **live-speech card** shows the capability summary, *Start listening* / *Stop listening*
+buttons, the current lifecycle phase (or end reason / typed error), and the latest live transcript.
+*Start* enters an undispatched click-scoped coroutine so browser user activation reaches the
+synchronous adapter `start()` call; session events are collected in a composition-owned coroutine and folded
+with the pure `foldSpeechEvent` helper (never a stale snapshot). The session is closed on disposal,
+which aborts active recognition and releases the microphone with no leaked callbacks. Live hypotheses drive the same prompt reducer as before; the
+simulated *Advance* / *Revise* controls remain and stay clearly labelled as simulation.
+
 ## Toolchain
 
 Versions come from the official Kotlin/KMP-App-Template baseline (commit `63ff248c`): Kotlin
@@ -439,6 +534,11 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 # Durable web store: the same 9 reused contract behaviors plus browser-specific
 # durability/corruption/overflow/concurrency/lifecycle tests, in real headless Chromium (30 tests)
 ./gradlew :webStore:wasmJsBrowserTest
+
+# Browser Web Speech adapter: capability detection, callback->SpeechEvent mapping, revision
+# monotonicity, error mapping, and start/stop/close state machine, driven by a fake engine in
+# real headless Chromium with no microphone (25 tests)
+./gradlew :webSpeech:wasmJsBrowserTest
 
 # Android debug APK -> androidApp/build/outputs/apk/debug/
 ./gradlew :androidApp:assembleDebug

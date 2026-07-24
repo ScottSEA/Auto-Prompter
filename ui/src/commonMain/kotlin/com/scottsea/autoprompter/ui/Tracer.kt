@@ -27,6 +27,9 @@ import com.scottsea.autoprompter.core.document.store.SaveOutcome
 import com.scottsea.autoprompter.core.document.store.SavePrecondition
 import com.scottsea.autoprompter.core.document.store.StoredDocument
 import com.scottsea.autoprompter.core.document.toScript
+import com.scottsea.autoprompter.core.speech.LiveSpeechState
+import com.scottsea.autoprompter.core.speech.SpeechEvent
+import com.scottsea.autoprompter.core.speech.foldSpeechEvent
 
 /**
  * Immutable state for the diagnostic tracer screen.
@@ -53,6 +56,12 @@ import com.scottsea.autoprompter.core.document.toScript
  * state; the tracer's
  * pure helpers here wire editor saves and store results together, but the suspend store calls
  * themselves happen in the Compose layer, never in this pure model.
+ *
+ * It also carries a [LiveSpeechState] fed by the real live speech runtime injected into the screen.
+ * Runtime lifecycle/error events only update this diagnostic state, while hypotheses fold through the
+ * same [com.scottsea.autoprompter.core.reducePromptSession] as the simulated controls (so ManualHold
+ * still suppresses speech and the follower never regresses). The simulated Advance/Revise controls
+ * and the real runtime therefore drive one shared prompt position.
  */
 data class TracerModel(
     val scenarioIndex: Int,
@@ -64,6 +73,7 @@ data class TracerModel(
     val session: PromptSessionState,
     val editor: EditorState,
     val library: DocumentLibraryState,
+    val live: LiveSpeechState,
 )
 
 /**
@@ -141,6 +151,7 @@ fun initialTracerModel(): TracerModel =
         index = 0,
         editorSessionSerial = 0L,
         library = DocumentLibraryState(),
+        live = LiveSpeechState.INITIAL,
     )
 
 /** Switches to [index] under a fresh editor lifetime and primes its first speech hypothesis. */
@@ -152,6 +163,7 @@ fun selectScenario(model: TracerModel, index: Int): TracerModel {
         index = index,
         editorSessionSerial = model.editorSessionSerial + 1L,
         library = model.library,
+        live = model.live,
     )
 }
 
@@ -159,6 +171,7 @@ private fun createScenarioModel(
     index: Int,
     editorSessionSerial: Long,
     library: DocumentLibraryState,
+    live: LiveSpeechState,
 ): TracerModel {
     val scenario = SCENARIOS[index]
     val base = TracerModel(
@@ -174,6 +187,7 @@ private fun createScenarioModel(
             EditorSessionId("tracer-$editorSessionSerial-$index-${scenario.document.id.value}"),
         ),
         library = library,
+        live = live,
     )
     return applyHypothesis(base, scenario.steps.first(), stepIndex = 0)
 }
@@ -188,6 +202,22 @@ fun advance(model: TracerModel): TracerModel {
 fun revise(model: TracerModel): TracerModel {
     val shorter = hypothesisOf(model.hypothesisText).tokens.dropLast(1).joinToString(" ")
     return applyHypothesis(model, shorter, model.stepIndex)
+}
+
+/**
+ * Folds one real runtime [SpeechEvent] into the tracer model.
+ *
+ * This is the single seam between the injected live speech runtime and the shared prompt reducer: it
+ * defers entirely to the core [foldSpeechEvent], then copies both the advanced [PromptSessionState]
+ * and the diagnostic [LiveSpeechState] back into the model. Hypotheses therefore drive the *same*
+ * follower as the simulated Advance/Revise controls (so ManualHold still suppresses them and shorter
+ * revisions never regress), while Starting/Listening/Ended/Failed events leave the prompt position
+ * untouched and only refresh the diagnostic state. Callers must always fold into the latest model,
+ * never a snapshot captured when collection began.
+ */
+fun foldLiveSpeech(model: TracerModel, event: SpeechEvent): TracerModel {
+    val folded = foldSpeechEvent(model.session, model.live, event)
+    return model.copy(session = folded.session, live = folded.live)
 }
 
 /** Presentation-remote nudge one token forward (enters manual hold). */

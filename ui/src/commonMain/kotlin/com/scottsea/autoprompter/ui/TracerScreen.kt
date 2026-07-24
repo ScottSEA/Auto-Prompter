@@ -18,6 +18,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,20 +44,35 @@ import com.scottsea.autoprompter.core.document.library.DocumentLibraryState
 import com.scottsea.autoprompter.core.document.store.DocumentState
 import com.scottsea.autoprompter.core.document.store.DocumentStore
 import com.scottsea.autoprompter.core.document.store.DocumentSummary
+import com.scottsea.autoprompter.core.speech.LanguageTag
+import com.scottsea.autoprompter.core.speech.LiveSpeechPhase
+import com.scottsea.autoprompter.core.speech.LiveSpeechRuntime
+import com.scottsea.autoprompter.core.speech.SpeechCapability
+import com.scottsea.autoprompter.core.speech.SpeechEndReason
+import com.scottsea.autoprompter.core.speech.SpeechError
+import com.scottsea.autoprompter.core.speech.SpeechEvent
+import com.scottsea.autoprompter.core.speech.SpeechSession
+import com.scottsea.autoprompter.core.speech.SpeechSessionPlan
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+/** The language the diagnostic live speech card requests. Configurable later via the session plan. */
+private const val LIVE_SPEECH_LANGUAGE = "en-US"
 
 /** Platform composition roots own a [DocumentStore] and inject it into this single shared entry point. */
 @Composable
 fun TracerApp(
     store: DocumentStore,
+    speech: LiveSpeechRuntime,
     onStoreFailure: (Throwable) -> Unit = { throw it },
 ) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
-            TracerScreen(store, onStoreFailure)
+            TracerScreen(store, speech, onStoreFailure)
         }
     }
 }
@@ -65,6 +81,7 @@ fun TracerApp(
 @Composable
 fun TracerScreen(
     store: DocumentStore,
+    speech: LiveSpeechRuntime,
     onStoreFailure: (Throwable) -> Unit,
 ) {
     var model by remember { mutableStateOf(initialTracerModel()) }
@@ -162,6 +179,13 @@ fun TracerScreen(
             OutlinedButton(onClick = { model = reset(model) }) { Text("Reset") }
         }
 
+        LiveSpeechSection(
+            model = model,
+            updateModel = updateModel,
+            runtime = speech,
+            scope = scope,
+        )
+
         DiagnosticEditorSection(
             model = model,
             updateModel = updateModel,
@@ -171,6 +195,183 @@ fun TracerScreen(
         )
     }
 }
+
+/**
+ * A clearly labelled diagnostic card over the injected real [LiveSpeechRuntime].
+ *
+ * This is the only place the tracer touches a *real* recognizer. It renders the runtime's honest
+ * [SpeechCapability], disables Start with the reason when unsupported, and otherwise opens a
+ * [SpeechSession] and starts it undispatched inside the button callback so a browser can retain the
+ * user gesture. Session events are collected in a composition-owned coroutine and folded into the
+ * latest model via the pure [foldLiveSpeech]; hypotheses therefore drive the same prompt follower as
+ * the simulated Advance/Revise controls above, while lifecycle/error events only update the
+ * diagnostic state shown here. The session is stopped/closed on disposal and when it ends, so no
+ * callbacks leak past the composition.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LiveSpeechSection(
+    model: TracerModel,
+    updateModel: ((TracerModel) -> TracerModel) -> Unit,
+    runtime: LiveSpeechRuntime,
+    scope: CoroutineScope,
+) {
+    val capability = runtime.capabilities
+    var session by remember(runtime) { mutableStateOf<SpeechSession?>(null) }
+    var collector by remember(runtime) { mutableStateOf<Job?>(null) }
+    var starting by remember(runtime) { mutableStateOf(false) }
+    val listening =
+        model.live.phase == LiveSpeechPhase.Starting || model.live.phase == LiveSpeechPhase.Listening
+
+    fun release(active: SpeechSession?) {
+        if (active != null && session === active) {
+            collector?.cancel()
+            collector = null
+            session = null
+        }
+        active?.close()
+    }
+
+    fun reportSpeechFailure(failure: Throwable) {
+        updateModel { current ->
+            foldLiveSpeech(
+                current,
+                SpeechEvent.Failed(SpeechError.Unknown(failure.message)),
+            )
+        }
+    }
+
+    // Once the recognizer ends or fails, release it so Start can open a fresh session next time.
+    LaunchedEffect(model.live.phase) {
+        if (model.live.phase == LiveSpeechPhase.Ended || model.live.phase == LiveSpeechPhase.Failed) {
+            release(session)
+        }
+    }
+
+    // Detach every callback and drop the recognizer when the card leaves the composition.
+    DisposableEffect(runtime) {
+        onDispose {
+            starting = false
+            release(session)
+        }
+    }
+
+    Card {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("Live speech runtime (real)", style = MaterialTheme.typography.labelLarge)
+            Text(capabilitySummary(capability), style = MaterialTheme.typography.bodySmall)
+            if (!capability.supported) {
+                Text(
+                    "Unsupported: ${capability.unsupportedReason}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Text("Phase: ${phaseLabel(model.live.phase)}", style = MaterialTheme.typography.titleSmall)
+            model.live.endReason?.let {
+                Text("End: ${endReasonLabel(it)}", style = MaterialTheme.typography.bodySmall)
+            }
+            model.live.lastError?.let {
+                Text("Error: ${speechErrorLabel(it)}", style = MaterialTheme.typography.bodySmall)
+            }
+            Text("Latest live transcript: ${model.live.latestTranscript.ifEmpty { "(none)" }}")
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    enabled = capability.supported && !starting && session == null,
+                    onClick = {
+                        if (starting || session != null) return@Button
+                        starting = true
+                        // UNDISPATCHED enters open/start before returning from this click callback.
+                        // The browser adapter does not suspend there, preserving browser user activation.
+                        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                            var opened: SpeechSession? = null
+                            try {
+                                opened = runtime.open(SpeechSessionPlan(LanguageTag(LIVE_SPEECH_LANGUAGE)))
+                                session = opened
+                                collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                                    opened.events.collect { event ->
+                                        updateModel { current -> foldLiveSpeech(current, event) }
+                                    }
+                                }
+                                opened.start()
+                            } catch (cancelled: CancellationException) {
+                                release(opened)
+                                throw cancelled
+                            } catch (failure: Throwable) {
+                                release(opened)
+                                reportSpeechFailure(failure)
+                            } finally {
+                                starting = false
+                            }
+                        }
+                    },
+                ) { Text("Start listening") }
+                OutlinedButton(
+                    enabled = listening && session != null,
+                    onClick = {
+                        val active = session ?: return@OutlinedButton
+                        scope.launch {
+                            try {
+                                active.stop()
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Throwable) {
+                                release(active)
+                                reportSpeechFailure(failure)
+                            }
+                        }
+                    },
+                ) { Text("Stop listening") }
+            }
+        }
+    }
+}
+
+/** A concise, honest one-line summary of what the injected runtime can do. */
+private fun capabilitySummary(capability: SpeechCapability): String {
+    if (!capability.supported) return "Not supported in this build."
+    val traits = buildList {
+        add(if (capability.streaming) "interim results" else "final only")
+        if (capability.continuous) add("continuous")
+        add(if (capability.offlineGuaranteed) "offline guaranteed" else "online / vendor-dependent")
+        if (capability.ownsMicrophone) add("owns microphone")
+    }
+    return "Supported: " + traits.joinToString(", ") + "."
+}
+
+private fun phaseLabel(phase: LiveSpeechPhase): String =
+    when (phase) {
+        LiveSpeechPhase.Idle -> "Idle"
+        LiveSpeechPhase.Starting -> "Starting"
+        LiveSpeechPhase.Listening -> "Listening"
+        LiveSpeechPhase.Ended -> "Ended"
+        LiveSpeechPhase.Failed -> "Failed"
+    }
+
+private fun endReasonLabel(reason: SpeechEndReason): String =
+    when (reason) {
+        SpeechEndReason.StoppedByRequest -> "stopped by request"
+        SpeechEndReason.EndedUnexpectedly -> "ended unexpectedly"
+    }
+
+private fun speechErrorLabel(error: SpeechError): String =
+    when (error) {
+        SpeechError.Unsupported -> "unsupported"
+        SpeechError.NotAllowed -> "microphone / permission denied"
+        SpeechError.AudioCapture -> "audio capture failed"
+        SpeechError.Network -> "network error"
+        SpeechError.NoSpeech -> "no speech detected"
+        SpeechError.Aborted -> "aborted"
+        SpeechError.LanguageNotSupported -> "language not supported"
+        SpeechError.ServiceNotAllowed -> "service not allowed"
+        is SpeechError.Unknown -> "unknown${error.raw?.let { " ($it)" } ?: ""}"
+    }
 
 /**
  * A clearly labelled diagnostic editor section over the shared document-editor reducer.
