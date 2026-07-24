@@ -32,6 +32,13 @@ androidxSqlite = "2.7.0"
 # KSP 2.3.10 is the latest stable KSP2 release (published 2026-07-09, decoupled semver). KSP2 is
 # not pinned to a single Kotlin version; this project's Kotlin 2.3.21 build resolves and runs it.
 ksp = "2.3.10"
+# Juul com.juul.indexeddb:core 0.12.0 (Apache-2.0) is a small coroutine wrapper over the browser
+# IndexedDB API. 0.12.0 (published 2026, built for the Kotlin 2.3.x line) is the first release with
+# Kotlin/Wasm support: it drops `dynamic` for `JsAny`, adds a `core-wasm-js` artifact, and exposes
+# suspend transaction wrappers (openDatabase/writeTransaction/transaction) with auto-commit-safe
+# scoped operations. It is the durable web (wasmJs) DocumentStore backend; see :webStore and
+# https://github.com/JuulLabs/indexeddb . It resolves from Maven Central.
+indexeddb = "0.12.0"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
@@ -48,6 +55,7 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 androidx-room3-runtime = { module = "androidx.room3:room3-runtime", version.ref = "room" }
 androidx-room3-compiler = { module = "androidx.room3:room3-compiler", version.ref = "room" }
 androidx-sqlite-bundled = { module = "androidx.sqlite:sqlite-bundled", version.ref = "androidxSqlite" }
+juul-indexeddb-core = { module = "com.juul.indexeddb:core", version.ref = "indexeddb" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

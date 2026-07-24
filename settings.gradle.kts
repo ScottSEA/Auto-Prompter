@@ -35,6 +35,7 @@ plugins {
 include(":core")
 include(":storeContractTest")
 include(":roomStore")
+include(":webStore")
 include(":ui")
 include(":androidApp")
 include(":webApp")

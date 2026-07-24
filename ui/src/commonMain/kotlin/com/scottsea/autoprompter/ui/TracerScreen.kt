@@ -44,22 +44,29 @@ import com.scottsea.autoprompter.core.document.store.DocumentState
 import com.scottsea.autoprompter.core.document.store.DocumentStore
 import com.scottsea.autoprompter.core.document.store.DocumentSummary
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /** Platform composition roots own a [DocumentStore] and inject it into this single shared entry point. */
 @Composable
-fun TracerApp(store: DocumentStore) {
+fun TracerApp(
+    store: DocumentStore,
+    onStoreFailure: (Throwable) -> Unit = { throw it },
+) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
-            TracerScreen(store)
+            TracerScreen(store, onStoreFailure)
         }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun TracerScreen(store: DocumentStore) {
+fun TracerScreen(
+    store: DocumentStore,
+    onStoreFailure: (Throwable) -> Unit,
+) {
     var model by remember { mutableStateOf(initialTracerModel()) }
     val updateModel: ((TracerModel) -> TracerModel) -> Unit = { transform ->
         model = transform(model)
@@ -69,7 +76,13 @@ fun TracerScreen(store: DocumentStore) {
 
     // Prime the library from the store's current live listing on first composition.
     LaunchedEffect(store) {
-        model = applyLibraryListing(model, store.list())
+        try {
+            model = applyLibraryListing(model, store.list())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            onStoreFailure(failure)
+        }
     }
 
     val committed = model.session.follow.committedTokens
@@ -154,6 +167,7 @@ fun TracerScreen(store: DocumentStore) {
             updateModel = updateModel,
             store = store,
             scope = scope,
+            onStoreFailure = onStoreFailure,
         )
     }
 }
@@ -174,6 +188,7 @@ private fun DiagnosticEditorSection(
     updateModel: ((TracerModel) -> TracerModel) -> Unit,
     store: DocumentStore,
     scope: CoroutineScope,
+    onStoreFailure: (Throwable) -> Unit,
 ) {
     val editor = model.editor
     val firstBlock = editor.blocks.firstOrNull()
@@ -263,7 +278,7 @@ private fun DiagnosticEditorSection(
                         val candidate = saveCandidate(model.editor)
                         val precondition = storeSavePrecondition(model)
                         val selectionAtRequest = model.library.selectedId
-                        scope.launch {
+                        scope.launchStoreOperation(onStoreFailure) {
                             val outcome = store.save(candidate.document, precondition)
                             updateModel { current ->
                                 applyStoreSaveOutcome(
@@ -284,6 +299,7 @@ private fun DiagnosticEditorSection(
                 updateModel = updateModel,
                 store = store,
                 scope = scope,
+                onStoreFailure = onStoreFailure,
             )
         }
     }
@@ -302,13 +318,14 @@ private fun DiagnosticLibrarySection(
     updateModel: ((TracerModel) -> TracerModel) -> Unit,
     store: DocumentStore,
     scope: CoroutineScope,
+    onStoreFailure: (Throwable) -> Unit,
 ) {
     val library: DocumentLibraryState = model.library
     val selected: DocumentSummary? = selectedLibraryEntry(model)
 
-    Text("Reference library (process-only; not durable)", style = MaterialTheme.typography.titleSmall)
+    Text("Reference library (durable store)", style = MaterialTheme.typography.titleSmall)
     Text(
-        "In-memory reference store. Entries are lost when the process ends; no restart persistence yet.",
+        "Saved documents persist in the app's durable store and survive restart and reload.",
         style = MaterialTheme.typography.bodySmall,
     )
 
@@ -339,7 +356,7 @@ private fun DiagnosticLibrarySection(
                         val requestedSession = model.editor.sessionId
                         val requestedGeneration = model.editor.editGeneration
                         updateModel { current -> selectLibraryEntry(current, requestedId) }
-                        scope.launch {
+                        scope.launchStoreOperation(onStoreFailure) {
                             val current = store.load(requestedId)
                             if (current != null) {
                                 updateModel { latest ->
@@ -376,7 +393,7 @@ private fun DiagnosticLibrarySection(
         OutlinedButton(
             onClick = {
                 val target = selected ?: return@OutlinedButton
-                scope.launch {
+                scope.launchStoreOperation(onStoreFailure) {
                     val outcome = store.delete(target.id, target.generation)
                     updateModel { current -> applyStoreDeleteOutcome(current, outcome) }
                 }
@@ -387,6 +404,21 @@ private fun DiagnosticLibrarySection(
             OutlinedButton(onClick = { updateModel(::clearLibraryConflict) }) {
                 Text("Clear conflict")
             }
+        }
+    }
+}
+
+private fun CoroutineScope.launchStoreOperation(
+    onFailure: (Throwable) -> Unit,
+    operation: suspend () -> Unit,
+) {
+    launch {
+        try {
+            operation()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            onFailure(failure)
         }
     }
 }

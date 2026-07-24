@@ -20,6 +20,8 @@ kotlin {
         wasmJsMain.dependencies {
             implementation(projects.core)
             implementation(projects.ui)
+            implementation(projects.webStore)
+            implementation(libs.kotlinx.coroutines.core)
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
             implementation(libs.compose.material3)

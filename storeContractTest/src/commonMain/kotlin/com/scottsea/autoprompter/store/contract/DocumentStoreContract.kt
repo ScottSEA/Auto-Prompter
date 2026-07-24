@@ -32,8 +32,12 @@ import kotlin.test.assertTrue
  * modules while never being published inside production :core's own test code.
  */
 
-/** Builds a fresh, empty store for one behavior. */
-typealias DocumentStoreFactory = () -> DocumentStore
+/**
+ * Builds a fresh, empty store for one behavior. It is a **suspend** factory because durable adapters
+ * open asynchronously (Room migrates on first access; the IndexedDB adapter awaits `openDatabase`).
+ * Synchronous adapters (InMemory) satisfy it with a plain lambda, so no behavior below changes.
+ */
+typealias DocumentStoreFactory = suspend () -> DocumentStore
 
 private fun document(
     id: String,

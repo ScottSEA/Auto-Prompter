@@ -46,9 +46,11 @@ import com.scottsea.autoprompter.core.document.toScript
  * reducer actions only; "apply to prompt" materializes the validated document through the public
  * save seam and restarts the session from it.
  *
- * Finally it carries a [DocumentLibraryState] mirroring a real, process-only
- * [InMemoryDocumentStore][com.scottsea.autoprompter.core.document.store.InMemoryDocumentStore] that
- * the screen owns. The library reducer folds observed store outcomes into UI state; the tracer's
+ * Finally it carries a [DocumentLibraryState] mirroring the injected [DocumentStore]
+ * ([com.scottsea.autoprompter.core.document.store.DocumentStore]) that
+ * the screen owns -- an in-memory reference store in tests, and a durable adapter in production
+ * (Room on Android, IndexedDB on web). The library reducer folds observed store outcomes into UI
+ * state; the tracer's
  * pure helpers here wire editor saves and store results together, but the suspend store calls
  * themselves happen in the Compose layer, never in this pure model.
  */

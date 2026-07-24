@@ -14,18 +14,21 @@ Compose screen that runs unchanged on Android and in the browser.
 | `:core`              | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain, the canonical serializable `ScriptDocument` format, the pure document-editor reducer, the public `ScriptFollower` follow interface, the pure `reducePromptSession` session state machine, the `DocumentStore` seam, and its `InMemoryDocumentStore` reference adapter. Depends on no adapter. |
 | `:storeContractTest` | KMP test-support library (jvm, android, wasmJs) | Owns the nine reusable `DocumentStore` contract behaviors as ordinary functions so every adapter runs the exact same assertions. Test-only support; nothing production depends on it. |
 | `:roomStore`         | KMP library (jvm, androidLibrary) | Durable Room 3 / SQLite `RoomDocumentStore` adapter for the `DocumentStore` seam, plus its `jvm()` / Android factory functions. Depends inward on `:core`; keeps Room/KSP codegen out of `:core` and `:ui`. |
+| `:webStore`          | KMP library (wasmJs) | Durable browser `IndexedDbDocumentStore` adapter for the `DocumentStore` seam over **IndexedDB** (via `com.juul.indexeddb`), plus its suspend `openIndexedDbDocumentStore(...)` factory. Depends inward on `:core`; keeps IndexedDB/JS interop out of `:core` and `:ui`. |
 | `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen with a diagnostic document-editor section. Dispatches all intent through `:core`'s reducers and takes an injected `DocumentStore`; holds no alignment, mode, editing, or store-construction logic of its own. |
 | `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store and hosts the shared screen. |
-| `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that builds the in-memory store and serves the shared screen. |
+| `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that opens the durable IndexedDB store and serves the shared screen. |
 
 Adapters (`:androidApp`, `:webApp`) depend inward on `:ui` -> `:core`; `:androidApp` also
-depends on `:roomStore` -> `:core`. `:roomStore` depends only on `:core`; `:core` never depends
-outward on Room. `:storeContractTest` is consumed only by adapter test source sets.
+depends on `:roomStore` -> `:core`, and `:webApp` depends on `:webStore` -> `:core`. `:roomStore`
+and `:webStore` depend only on `:core`; `:core` never depends outward on Room or IndexedDB.
+`:storeContractTest` is consumed only by adapter test source sets.
 
 ### Why this shape
 
 The initial `:core` / `:ui` / launcher split remains intact. Two modules were added only where a
-real seam justified them: `:roomStore` isolates Room/KSP/native SQLite, while
+real seam justified them: `:roomStore` isolates Room/KSP/native SQLite, `:webStore` isolates the
+IndexedDB/JS interop, while
 `:storeContractTest` lets every adapter reuse one behavioral contract without shipping test code
 inside production core. `:core` adds a `jvm()` target purely so shared domain tests run fast
 off-device (`:core:jvmTest`); its shipped targets are `androidLibrary` and `wasmJs`.
@@ -117,9 +120,10 @@ default in this milestone. Derived token indexes are computed on demand and are 
 stored on the document. The tracer, Android, and web paths all start their session from
 `startPromptSession(document.toScript())`, sharing this one seam.
 
-**This is the in-memory model and its plain-text/JSON conversions only.** Persistence, files,
-IndexedDB, Drive sync, and Markdown/DOCX/PDF import-export are explicitly *not* implemented yet;
-they arrive with their own storage and sync milestones.
+**This is the in-memory model and its plain-text/JSON conversions only.** The document *format*
+carries no persistence of its own; durable storage lives behind the `DocumentStore` seam (Room on
+Android, IndexedDB on web). Files, Drive sync, and Markdown/DOCX/PDF import-export are explicitly
+*not* implemented yet; they arrive with their own storage and sync milestones.
 
 ## The document editor reducer
 
@@ -174,7 +178,8 @@ confirms**, acknowledges the current generation so the editor returns to clean. 
 reference-library section lists saved entries with their generations and offers `Select`, `Load`
 (restart editor + prompt from the saved snapshot under a fresh `EditorSessionId`), and
 `Delete selected`. This section is **shared Compose for diagnostics only**; per the architecture
-the production web editor remains a DOM island, and the in-memory store is **not persistence**.
+the production web editor remains a DOM island. The injected `DocumentStore` behind it is durable on
+both platforms (Room on Android, IndexedDB on web).
 Scenario selection replaces editor, document, and session together from the same canonical
 document while preserving the store-backed library state; Reset resets prompting only and leaves
 the editor draft untouched.
@@ -182,13 +187,14 @@ the editor draft untouched.
 ## The shared document store
 
 The persistence seam is an asynchronous, optimistic-concurrency `DocumentStore`
-(`com.scottsea.autoprompter.core.document.store`). Android now implements it durably over **Room /
-SQLite** (see [The durable Room store](#the-durable-room-store)); the **web** adapter (over
-IndexedDB / OPFS) is still a later slice. `:core` ships the interface, the reusable contract test
+(`com.scottsea.autoprompter.core.document.store`). Android implements it durably over **Room /
+SQLite** (see [The durable Room store](#the-durable-room-store)); the **web** implements it durably
+over **IndexedDB** (see [The durable web store](#the-durable-web-store)). `:core` ships the
+interface, the reusable contract test
 suite (now in `:storeContractTest`), and one **in-memory reference adapter** that proves the
-semantics those production adapters must satisfy and still backs web and every off-device test.
+semantics those production adapters must satisfy and still backs every off-device test.
 **The reference adapter is not persistence: it holds everything in process memory and
-loses all documents when the process ends -- there is no restart persistence yet.**
+loses all documents when the process ends -- it exists only to specify and test the contract.**
 
 Concurrency is optimistic and explicit, never nullable magic. Each document ID carries a
 **monotonic `StoreGeneration`** (an inline `Long`, rejecting negatives): the first successful
@@ -214,7 +220,7 @@ the last generation per ID (so tombstones survive delete), `list()` returns a fr
 of live summaries ordered deterministically by title then ID, and a failed precondition mutates and
 increments nothing. There is no silent fallback or broad catch. 9 contract behaviors run against it
 through the reusable functional contract in the **`:storeContractTest`** module (a functional
-runner, not an inheritance framework, so the Room adapter -- and a future IndexedDB adapter --
+runner, not an inheritance framework, so the Room adapter and the IndexedDB adapter
 reuse the exact same assertions without duplicating them): never-created reads, first create at
 gen 1, `MustBeMissing` conflict on a live doc, `Matches` update vs stale-conflict, delete +
 tombstone vs stale/missing delete, ABA-protected recreate, independent per-ID sequences with
@@ -243,16 +249,16 @@ editor session, generation, requested selected document, and requested stored ge
 
 **Non-goals in this slice:** no autosave, undo/redo history, rich text, the eventual
 DOM editor island, or schema v2. The pinned schema-v1 wire contract and `ScriptDocument`'s
-immutable-block guarantee are unchanged. The **web** durable adapter (Room's WebWorker/OPFS
-driver over the same seam) remains a next slice.
+immutable-block guarantee are unchanged. Both production platforms are now durable: Android over
+Room/SQLite and web over IndexedDB.
 
 ## The durable Room store
 
 `:roomStore` ships `RoomDocumentStore` -- the first real durable adapter for the `DocumentStore`
 seam, backed by **Room 3** over **SQLite**. It satisfies the nine-behavior contract exactly (run
 against real temporary on-disk SQLite databases on the JVM, one fresh database per behavior) and
-adds durability, so Android now survives process restart. **Web still gets the in-memory reference
-store and is process-only** -- there is no web persistence yet.
+adds durability, so Android now survives process restart. Web has its own durable adapter over
+IndexedDB (see [The durable web store](#the-durable-web-store)).
 
 **Versions (official, verified 2026-07-24):** Room `androidx.room3:room3-runtime` / `room3-compiler`
 **3.0.0** (the first stable Room 3 line, released 2026-07-01; the new `androidx.room3` namespace is
@@ -312,9 +318,90 @@ coroutines. The store is Activity-owned and reopened after a configuration chang
 because the SQLite file is the durable source of truth and Room's compare-and-set is atomic; an
 Application-scoped owner was not needed for this slice.
 
-**Web is still process-only.** `webApp`'s `main` builds a single `InMemoryDocumentStore` for the
-page's lifetime and injects it into `TracerApp`. This is not persistence -- reloading the page loses
-all documents -- and is called out in code and here to avoid any claim of web durability.
+**Web durability & lifecycle.** `webApp`'s `main` opens one IndexedDB-backed store
+(`openIndexedDbDocumentStore()`), waits for the async open in a retained page-lifetime coroutine
+scope (never `GlobalScope`), and injects it into `TracerApp`. The connection is kept open for the
+lifetime of the page. If the open fails the app renders a **fatal bootstrap error** instead of
+silently substituting an in-memory store -- a memory fallback would falsely advertise durability and
+discard the user's work on the next reload. The app also observes connection liveness: a cross-tab
+schema upgrade, browser force-close, or failed store operation replaces the tracer with a clear
+reload-required error instead of leaving dead controls. See [The durable web store](#the-durable-web-store).
+
+## The durable web store
+
+`:webStore` ships `IndexedDbDocumentStore` -- the durable web adapter for the `DocumentStore` seam,
+backed by the browser's **IndexedDB**. It satisfies the same nine-behavior contract exactly (run in
+a **real headless Chromium**, one fresh uniquely-named database per behavior) and adds
+browser-specific durability, corruption, generation-overflow, and concurrency tests. This is the web
+analogue of the Room store: reloading the page, or restarting the browser, preserves saved
+documents and their generations.
+
+**Dependency (official, verified 2026-07-24):** direct IndexedDB access via
+`com.juul.indexeddb:core:0.12.0` (Apache-2.0;
+<https://github.com/JuulLabs/indexeddb>). Version 0.12.0 is the first release with Kotlin/Wasm
+support and coroutine transaction wrappers, built for the Kotlin 2.3.x line this project uses. We
+chose direct IndexedDB over a Room 3 `WebWorkerSQLiteDriver` because Room 3 3.0.0 still ships **no
+default web worker** -- it would require authoring and maintaining an app-supplied SQLite Wasm/OPFS
+worker, which is disproportionate for a single-object-store key/value schema. The Juul/JS/IndexedDB
+types never leak through the `DocumentStore` interface; `kotlin.js.ExperimentalWasmJsInterop` is
+opted in only on the interop source that needs it, not project-wide.
+
+**Schema.** Database version 1 with a single object store `document_rows`, keyed by the string `id`
+(one JS object row per `DocumentId`). Row fields: `id` (string), `generation` (**decimal string**),
+`deleted` (boolean), `title` (nullable string), `payload` (nullable string). The generation is
+stored as a **decimal string, never a `Long` or JS number**: the Juul README warns that `Long`
+emits an unsupported `bigint` across the JS boundary, and a JS `number` silently loses integer
+precision above 2^53. Strings round-trip exactly. Live/tombstone invariants match Room: a live row
+has a positive generation, a non-null title, and a non-null schema-v1 payload whose decoded id and
+title match the row; a tombstone has null title and null payload. A corrupt row throws a dedicated
+`WebStoreCorruptionException` **before** any read or mutation completes.
+
+**Atomic protocol.** `save` and `delete` perform their get -> check-precondition -> put inside a
+single IndexedDB **readwrite transaction** on the `document_rows` store. IndexedDB serializes
+overlapping readwrite transactions for the same store, so a concurrent same-precondition race yields
+exactly one winner and one typed `Conflict` -- with no lost update. Encoding, decoding, and
+validation run **synchronously** inside the transaction; the code never calls an arbitrary suspend
+function between the transaction-scoped operations, because an unrelated suspension can let the
+transaction auto-commit and raise `TransactionInactiveError`. Only Juul's transaction-scoped suspend
+operations are awaited inside the lambda. First mutation is generation 1, each success `+1`,
+tombstones are retained, and recreate resumes at tombstone + 1. Generation strings are parsed with
+strict canonical `Long` parsing: non-numeric, non-canonical (`"007"`, `"+1"`, `" 1"`, `"1.0"`),
+negative, zero, and out-of-range values are rejected as corruption, and `Long.MAX_VALUE` is checked
+before every write so overflow fails without altering the row. `list()` returns only live rows,
+validates tombstones before filtering them, decodes every live row, orders deterministically by title
+then id, and returns a fresh defensive list.
+
+**Lifecycle.** `IndexedDbDocumentStore` implements `DocumentStore` and `AutoCloseable`. Because
+opening and migrating IndexedDB are asynchronous, construction goes through the suspend factory
+`openIndexedDbDocumentStore(name: String = DEFAULT_WEB_DATABASE_NAME)`. The version-1 upgrade
+(`oldVersion < 1`) creates the object store and key path; unsupported future database versions are
+rejected through normal IndexedDB version handling, with no destructive fallback. A test-only
+database-deletion helper supports isolated tests; cleanup attempts every close/delete and rethrows
+the first failure so blocked isolation cannot pass unnoticed. The web app uses the fixed default
+database name and observes `isOpenFlow`; a version-change/close event transitions bootstrap to a
+reload-required error.
+
+**Contract reuse.** `:webStore`'s browser tests call the same nine functions from
+`:storeContractTest` that `:core` and `:roomStore` use -- no behavior is re-specified. To let the
+IndexedDB adapter open asynchronously, the contract's store-factory type is a **suspend** function;
+the in-memory and Room adapters pass their existing non-suspend constructors unchanged, and the
+production `DocumentStore` interface is untouched. On top of the nine shared behaviors the module
+adds browser-specific tests: close/reopen the same database preserves the live document and its
+generation; a tombstone survives reopen and recreate advances past it; malformed payload,
+id/title mismatch, invalid tombstone, generation `0`, and non-numeric/overflow generation each throw
+before any read or mutation; a `Long.MAX_VALUE` mutation fails without altering the row; and two
+**independently opened** store instances on the same database satisfy the concurrent compare-and-set
+(proving serialization holds across connections, not just within one instance). Every test uses a
+unique database name and closes then `deleteDatabase`es it afterwards -- including on failure -- so
+no test pollutes another and no open connection blocks deletion. The module has 30 browser tests: 9
+shared contract behaviors plus smoke (1), durability (2), corruption (9), generation-overflow (2),
+concurrency (1), pure row-mapping (4), cleanup-failure (1), and cross-version lifecycle (1) coverage.
+
+**Browser compatibility & storage caveats.** IndexedDB is available in all current evergreen
+browsers. Stored data is durable but **origin-scoped** and subject to the browser's storage
+eviction under storage pressure or when the user clears site data; it is not a server-side backup.
+Private/incognito sessions may clear IndexedDB when the session ends. These are properties of
+browser storage, not of this adapter.
 
 ## Toolchain
 
@@ -348,6 +435,10 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 # Durable Room store: 9 reused contract behaviors on real temp SQLite DBs,
 # plus reopen/corruption/overflow tests (off-device, JVM)
 ./gradlew :roomStore:jvmTest
+
+# Durable web store: the same 9 reused contract behaviors plus browser-specific
+# durability/corruption/overflow/concurrency/lifecycle tests, in real headless Chromium (30 tests)
+./gradlew :webStore:wasmJsBrowserTest
 
 # Android debug APK -> androidApp/build/outputs/apk/debug/
 ./gradlew :androidApp:assembleDebug
