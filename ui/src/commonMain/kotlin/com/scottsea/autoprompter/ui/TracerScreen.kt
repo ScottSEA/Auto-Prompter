@@ -53,6 +53,7 @@ import com.scottsea.autoprompter.core.speech.SpeechError
 import com.scottsea.autoprompter.core.speech.SpeechEvent
 import com.scottsea.autoprompter.core.speech.SpeechSession
 import com.scottsea.autoprompter.core.speech.SpeechSessionPlan
+import com.scottsea.autoprompter.core.speech.speechErrorForFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -223,21 +224,25 @@ private fun LiveSpeechSection(
     val listening =
         model.live.phase == LiveSpeechPhase.Starting || model.live.phase == LiveSpeechPhase.Listening
 
+    fun reportSpeechFailure(failure: Throwable) {
+        updateModel { current ->
+            foldLiveSpeech(
+                current,
+                SpeechEvent.Failed(speechErrorForFailure(failure)),
+            )
+        }
+    }
+
     fun release(active: SpeechSession?) {
         if (active != null && session === active) {
             collector?.cancel()
             collector = null
             session = null
         }
-        active?.close()
-    }
-
-    fun reportSpeechFailure(failure: Throwable) {
-        updateModel { current ->
-            foldLiveSpeech(
-                current,
-                SpeechEvent.Failed(SpeechError.Unknown(failure.message)),
-            )
+        try {
+            active?.close()
+        } catch (failure: Throwable) {
+            reportSpeechFailure(failure)
         }
     }
 

@@ -33,6 +33,20 @@ sealed interface SpeechError {
     data class Unknown(val raw: String?) : SpeechError
 }
 
+/** An operation failed before an event stream existed, but still has a typed speech-domain error. */
+class SpeechOperationException(
+    val error: SpeechError,
+    message: String,
+    cause: Throwable? = null,
+) : IllegalStateException(message, cause)
+
+/** Preserves typed operation failures; unexpected exceptions remain explicit unknown failures. */
+fun speechErrorForFailure(failure: Throwable): SpeechError =
+    when (failure) {
+        is SpeechOperationException -> failure.error
+        else -> SpeechError.Unknown(failure.message)
+    }
+
 /**
  * Maps a standard Web Speech API error string (the `SpeechRecognitionErrorEvent.error` value) to a
  * typed [SpeechError]. This is pure and shared so the web adapter and its tests agree on the

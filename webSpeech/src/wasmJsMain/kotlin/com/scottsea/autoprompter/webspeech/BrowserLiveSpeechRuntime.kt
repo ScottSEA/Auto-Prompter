@@ -4,6 +4,8 @@ package com.scottsea.autoprompter.webspeech
 
 import com.scottsea.autoprompter.core.speech.LiveSpeechRuntime
 import com.scottsea.autoprompter.core.speech.SpeechCapability
+import com.scottsea.autoprompter.core.speech.SpeechError
+import com.scottsea.autoprompter.core.speech.SpeechOperationException
 import com.scottsea.autoprompter.core.speech.SpeechSession
 import com.scottsea.autoprompter.core.speech.SpeechSessionId
 import com.scottsea.autoprompter.core.speech.SpeechSessionPlan
@@ -27,9 +29,11 @@ class BrowserLiveSpeechRuntime internal constructor(
     override suspend fun open(plan: SpeechSessionPlan): SpeechSession {
         val factory =
             engineFactory
-                ?: error(
-                    "This browser has no Web Speech API support: " +
-                        "${capabilities.unsupportedReason}. Cannot open a speech session.",
+                ?: throw SpeechOperationException(
+                    error = SpeechError.Unsupported,
+                    message =
+                        "This browser has no Web Speech API support: " +
+                            "${capabilities.unsupportedReason}. Cannot open a speech session.",
                 )
         val id = SpeechSessionId("browser-speech-${nextSessionSerial()}")
         return BrowserSpeechSession(id = id, engine = factory(), language = plan.language.value)

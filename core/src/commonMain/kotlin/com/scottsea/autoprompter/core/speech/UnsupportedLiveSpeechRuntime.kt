@@ -16,7 +16,9 @@ class UnsupportedLiveSpeechRuntime(reason: String) : LiveSpeechRuntime {
     override val capabilities: SpeechCapability = SpeechCapability.unsupported(reason)
 
     override suspend fun open(plan: SpeechSessionPlan): SpeechSession =
-        error(
+        throw SpeechOperationException(
+            error = SpeechError.Unsupported,
+            message =
             "This build has no live speech runtime: " +
                 "${capabilities.unsupportedReason}. Cannot open a speech session.",
         )

@@ -25,6 +25,13 @@ dependencyResolutionManagement {
             }
         }
         mavenCentral()
+        maven("https://jitpack.io") {
+            content {
+                // sherpa-onnx's official Android demo publishes its tagged AAR through JitPack.
+                // Restrict this repository to that one upstream group.
+                includeGroup("com.github.k2-fsa")
+            }
+        }
     }
 }
 
@@ -37,6 +44,7 @@ include(":storeContractTest")
 include(":roomStore")
 include(":webStore")
 include(":webSpeech")
+include(":androidMedia")
 include(":ui")
 include(":androidApp")
 include(":webApp")

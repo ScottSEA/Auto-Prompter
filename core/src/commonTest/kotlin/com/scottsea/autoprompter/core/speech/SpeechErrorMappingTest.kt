@@ -31,4 +31,23 @@ class SpeechErrorMappingTest {
         assertEquals(SpeechError.Unknown(null), speechErrorForCode(""))
         assertEquals(SpeechError.Unknown(null), speechErrorForCode("   "))
     }
+
+    @Test
+    fun typedOperationFailurePreservesItsSpeechError() {
+        val failure =
+            SpeechOperationException(
+                SpeechError.LanguageNotSupported,
+                "Language is not installed.",
+            )
+
+        assertEquals(SpeechError.LanguageNotSupported, speechErrorForFailure(failure))
+    }
+
+    @Test
+    fun unexpectedOperationFailureRemainsUnknown() {
+        assertEquals(
+            SpeechError.Unknown("native failure"),
+            speechErrorForFailure(IllegalStateException("native failure")),
+        )
+    }
 }

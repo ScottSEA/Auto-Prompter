@@ -16,21 +16,23 @@ Compose screen that runs unchanged on Android and in the browser.
 | `:roomStore`         | KMP library (jvm, androidLibrary) | Durable Room 3 / SQLite `RoomDocumentStore` adapter for the `DocumentStore` seam, plus its `jvm()` / Android factory functions. Depends inward on `:core`; keeps Room/KSP codegen out of `:core` and `:ui`. |
 | `:webStore`          | KMP library (wasmJs) | Durable browser `IndexedDbDocumentStore` adapter for the `DocumentStore` seam over **IndexedDB** (via `com.juul.indexeddb`), plus its suspend `openIndexedDbDocumentStore(...)` factory. Depends inward on `:core`; keeps IndexedDB/JS interop out of `:core` and `:ui`. |
 | `:webSpeech`         | KMP library (wasmJs) | Capability-detected browser `LiveSpeechRuntime` adapter over the vendor **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`), plus its `browserLiveSpeechRuntime()` factory. Maps `onstart`/`onresult`/`onerror`/`onend` to the shared `SpeechEvent` stream behind an internal engine seam; no Web Speech types escape. Depends inward on `:core` only. |
+| `:androidMedia`      | Android library | Offline `LiveSpeechRuntime` adapter over one owned `AudioRecord` and sherpa-onnx streaming Zipformer, plus pinned model metadata and full-file verification. Depends inward on `:core`; keeps Android audio and sherpa/JNI types out of shared code. |
 | `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen with a diagnostic document-editor section and a diagnostic live-speech card. Dispatches all intent through `:core`'s reducers and takes an injected `DocumentStore` and `LiveSpeechRuntime`; holds no alignment, mode, editing, store-construction, or speech-recognition logic of its own. |
-| `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, injects an explicit `UnsupportedLiveSpeechRuntime`, and hosts the shared screen. |
+| `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, verifies the local speech model off-main, requests microphone permission only when that model is ready, injects either the offline runtime or an explicit unsupported runtime, and hosts the shared screen. |
 | `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that opens the durable IndexedDB store, feature-detects and injects `browserLiveSpeechRuntime()`, and serves the shared screen. |
 
 Adapters (`:androidApp`, `:webApp`) depend inward on `:ui` -> `:core`; `:androidApp` also
-depends on `:roomStore` -> `:core`, and `:webApp` depends on `:webStore` -> `:core` and
+depends on `:roomStore` and `:androidMedia` -> `:core`, and `:webApp` depends on `:webStore` -> `:core` and
 `:webSpeech` -> `:core`. `:roomStore`, `:webStore`, and `:webSpeech` depend only on `:core`;
-`:core` never depends outward on Room, IndexedDB, or the Web Speech API.
+`:core` never depends outward on Room, IndexedDB, Web Speech, Android audio, or sherpa-onnx.
 `:storeContractTest` is consumed only by adapter test source sets.
 
 ### Why this shape
 
 The initial `:core` / `:ui` / launcher split remains intact. Additional modules were added only
 where a real seam justified them: `:roomStore` isolates Room/KSP/native SQLite, `:webStore`
-isolates the IndexedDB/JS interop, `:webSpeech` isolates the browser Web Speech API interop, while
+isolates the IndexedDB/JS interop, `:webSpeech` isolates the browser Web Speech API interop,
+`:androidMedia` isolates owned microphone/sherpa/JNI resources, while
 `:storeContractTest` lets every adapter reuse one behavioral contract without shipping test code
 inside production core. `:core` adds a `jvm()` target purely so shared domain tests run fast
 off-device (`:core:jvmTest`); its shipped targets are `androidLibrary` and `wasmJs`.
@@ -73,12 +75,12 @@ transition through this reducer and shows the current mode, so the UI cannot dri
 
 The shared tracer screen exercises both layers through named scenarios (continuation, ad-lib
 insertion, skipped words, repeated phrase), and each scenario now originates from a canonical
-`ScriptDocument` (see below) rather than a raw string. 129 core behavior tests in `:core:jvmTest`
+`ScriptDocument` (see below) rather than a raw string. 131 core behavior tests in `:core:jvmTest`
 pin these behaviors: 16 aligner tests plus the state bounds, 8 reducer tests covering following,
 manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 document tests
 covering construction/validation, plain-text import, JSON round trip and error handling, and
 document-to-script conversion, 21 document-editor tests (see below), 9 `DocumentStore` contract
-tests, 16 document-library reducer tests (both see below), and 38 live-speech
+tests, 16 document-library reducer tests (both see below), and 40 live-speech
 capability/identity/error/lifecycle/fold tests. 29 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
 expected document identity/title and starts prompting from the document's converted `Script`,
@@ -475,17 +477,44 @@ and the project makes **no claim of offline web speech support**.
 
 ### Android adapter
 
-Android currently injects an explicit `UnsupportedLiveSpeechRuntime` whose capability is
-`supported = false` with the reason *"Offline Android speech runtime not installed in this build."*
-It **never requests the microphone and never emits fake hypotheses** -- the diagnostic card simply
-shows the reason and disables *Start listening*. This is honest about the state of the world:
-there is **no offline Android speech support in this build yet**, and no device was available to
-exercise a real recognizer (`adb devices` is empty in this environment, so physical
-`AudioRecord` / sherpa-onnx performance is unproven and is deliberately not simulated).
+`:androidMedia` now implements the real Android boundary over **sherpa-onnx 1.13.4** and one
+app-owned `AudioRecord`. The official Android AAR is pinned to
+`com.github.k2-fsa:sherpa-onnx:v1.13.4`; because that AAR is not currently published to Maven
+Central, the build uses JitPack with a repository content filter restricted to the single
+`com.github.k2-fsa` group. The app packages only `arm64-v8a` (physical devices) and `x86_64`
+(emulators), rather than all four upstream ABIs.
 
-The **next Android slice** is the real one: sherpa-onnx streaming ASR + `AudioRecord` capture +
-model download/lifecycle management, moved into a focused `:androidMedia` module, validated across
-a device matrix. Only then will Android report `supported = true`.
+The pinned English model is
+`sherpa-onnx-streaming-zipformer-en-20M-2023-02-17` at immutable Hugging Face revision
+`d42f2d9f7ca24806fb667456a18a9f1b60f70d16`. Its int8 encoder, decoder, int8 joiner, and token
+table total **45,202,074 bytes**; both the model and runtime are Apache-2.0. `SpeechModelPack`
+records each HTTPS URL, exact size, and SHA-256. Before native code can load the model,
+`inspectInstalledSpeechModel` hashes all four files from:
+
+```
+<app filesDir>/speech-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/
+```
+
+Missing, truncated, or corrupt files keep the runtime explicitly unsupported and the microphone
+untouched. A verified pack enables a streaming/offline/microphone-owning capability; only then does
+`MainActivity` request `RECORD_AUDIO`. This tracer slice deliberately does **not** download or
+bundle the 45 MB model yet, so a normal checkout remains unsupported until those verified files are
+provisioned. Atomic/resumable provisioning with storage preflight is the next vertical slice.
+
+Capture uses 16 kHz mono PCM16 in 20 ms chunks for this speech-only tracer. A dedicated single-thread
+dispatcher confines AudioRecord start/read/release and sherpa JNI use; endpoint results finalize an
+utterance, revised partials advance revisions, stop calls `inputFinished()` and drains a final
+result, and synchronous close waits for microphone/JNI teardown. When recording lands, the external
+runtime seam stays intact while capture moves to the architecture's single 48 kHz graph and feeds
+this recognizer through a tested resampler.
+
+Twenty-two off-device `:androidMedia:testDebugUnitTest` tests cover model metadata/verification,
+partial and endpoint revision mapping, typed permission/audio/language errors, stop/close failures,
+synchronous cleanup, distinct sessions, and capability honesty without loading JNI or requesting a
+microphone. The Android APK compiles and lints against the real AAR; the two-ABI debug APK is about
+82 MB before model files. **No Android device is connected**, so real microphone recognition,
+latency, accuracy, thermal behavior, and OEM teardown behavior remain unverified and are not claimed
+production-ready.
 
 ### Tracer wiring and the diagnostic card
 
@@ -502,6 +531,8 @@ simulated *Advance* / *Revise* controls remain and stay clearly labelled as simu
 
 Versions come from the official Kotlin/KMP-App-Template baseline (commit `63ff248c`): Kotlin
 2.3.21, Compose Multiplatform 1.11.0, AGP 9.0.1, Gradle 9.3.1, compile/target SDK 36, minSdk 26.
+Android offline speech uses sherpa-onnx **1.13.4** and its Apache-2.0 English 20M streaming
+Zipformer model; neither dependency crosses into shared code.
 The canonical document format uses `kotlinx-serialization-json` **1.11.0** (the latest stable
 release, built against the Kotlin 2.3.x line per its published tooling metadata); the serialization
 compiler plugin ships with Kotlin, so it is pinned to the Kotlin version in the version catalog.
@@ -539,6 +570,10 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 # monotonicity, error mapping, and start/stop/close state machine, driven by a fake engine in
 # real headless Chromium with no microphone (25 tests)
 ./gradlew :webSpeech:wasmJsBrowserTest
+
+# Android offline speech: model verification plus session/revision/error/resource lifecycle tests
+# with fake PCM/recognizer engines; no microphone or JNI is opened (22 tests)
+./gradlew :androidMedia:testDebugUnitTest
 
 # Android debug APK -> androidApp/build/outputs/apk/debug/
 ./gradlew :androidApp:assembleDebug

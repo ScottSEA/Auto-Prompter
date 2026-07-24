@@ -39,6 +39,10 @@ ksp = "2.3.10"
 # scoped operations. It is the durable web (wasmJs) DocumentStore backend; see :webStore and
 # https://github.com/JuulLabs/indexeddb . It resolves from Maven Central.
 indexeddb = "0.12.0"
+# Official sherpa-onnx Android release. Maven Central does not currently publish the Android AAR;
+# the upstream Android demo consumes this exact tag from JitPack. The repository is content-filtered
+# to com.github.k2-fsa in :androidMedia so no unrelated dependency can resolve there.
+sherpaOnnx = "v1.13.4"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
@@ -56,9 +60,11 @@ androidx-room3-runtime = { module = "androidx.room3:room3-runtime", version.ref 
 androidx-room3-compiler = { module = "androidx.room3:room3-compiler", version.ref = "room" }
 androidx-sqlite-bundled = { module = "androidx.sqlite:sqlite-bundled", version.ref = "androidxSqlite" }
 juul-indexeddb-core = { module = "com.juul.indexeddb:core", version.ref = "indexeddb" }
+sherpa-onnx-android = { module = "com.github.k2-fsa:sherpa-onnx", version.ref = "sherpaOnnx" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
+androidLibrary = { id = "com.android.library", version.ref = "agp" }
 androidMultiplatformLibrary = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
 composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }

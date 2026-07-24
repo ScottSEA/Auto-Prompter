@@ -9,11 +9,13 @@ plugins {
 dependencies {
     implementation(projects.ui)
     implementation(projects.roomStore)
+    implementation(projects.androidMedia)
     implementation(libs.androidx.activity.compose)
     implementation(libs.compose.foundation)
     implementation(libs.compose.material3)
     implementation(libs.compose.ui)
     implementation(libs.compose.uiToolingPreview)
+    implementation(libs.kotlinx.coroutines.core)
     debugImplementation(libs.compose.uiTooling)
 }
 
@@ -27,6 +29,11 @@ android {
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0"
+        ndk {
+            // Modern physical devices plus x86_64 emulator coverage. Avoid packaging two obsolete
+            // sherpa native ABIs in every APK.
+            abiFilters += setOf("arm64-v8a", "x86_64")
+        }
     }
     buildTypes {
         getByName("release") {
