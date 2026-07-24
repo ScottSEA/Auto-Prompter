@@ -13,6 +13,13 @@ kotlin = "2.3.21"
 # Kotlin 2.3.20 multiplatform plugin (per its kotlin-tooling-metadata), matching this project's
 # Kotlin 2.3.21 line, so the bundled serialization compiler plugin and this runtime agree.
 kotlinxSerialization = "1.11.0"
+# kotlinx.coroutines runtime + test. 1.11.0 is the latest stable release on Maven Central
+# (maven-metadata <release>1.11.0</release>, published 2026-05-07) and publishes a wasm-js target
+# (kotlinx-coroutines-core-wasm-js / kotlinx-coroutines-test-wasm-js 1.11.0 klibs exist). Its
+# kotlin-tooling-metadata.json reports it was built with the Kotlin multiplatform plugin 2.2.20;
+# Kotlin's stable 2.x library metadata is forward-compatible, so this project's 2.3.21 compiler
+# consumes it across jvm, androidLibrary, and wasmJs (proven by :core/:ui/:webApp builds).
+kotlinxCoroutines = "1.11.0"
 material3 = "1.11.0-alpha07"
 
 [libraries]
@@ -24,6 +31,8 @@ compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.re
 compose-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "composeMultiplatform" }
 compose-uiTooling = { module = "org.jetbrains.compose.ui:ui-tooling", version.ref = "composeMultiplatform" }
 compose-uiToolingPreview = { module = "org.jetbrains.compose.ui:ui-tooling-preview", version.ref = "composeMultiplatform" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 
 [plugins]

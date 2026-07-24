@@ -15,9 +15,17 @@ import com.scottsea.autoprompter.core.document.editor.EditorSessionId
 import com.scottsea.autoprompter.core.document.editor.EditorState
 import com.scottsea.autoprompter.core.document.editor.documentForSave
 import com.scottsea.autoprompter.core.document.editor.reduceDocumentEditor
-import com.scottsea.autoprompter.core.document.editor.saveCandidate
+import com.scottsea.autoprompter.core.document.editor.SaveToken
 import com.scottsea.autoprompter.core.document.editor.startDocumentEditor
 import com.scottsea.autoprompter.core.document.importPlainText
+import com.scottsea.autoprompter.core.document.library.DocumentLibraryState
+import com.scottsea.autoprompter.core.document.library.LibraryAction
+import com.scottsea.autoprompter.core.document.library.reduceDocumentLibrary
+import com.scottsea.autoprompter.core.document.store.DocumentSummary
+import com.scottsea.autoprompter.core.document.store.DeleteOutcome
+import com.scottsea.autoprompter.core.document.store.SaveOutcome
+import com.scottsea.autoprompter.core.document.store.SavePrecondition
+import com.scottsea.autoprompter.core.document.store.StoredDocument
 import com.scottsea.autoprompter.core.document.toScript
 
 /**
@@ -37,6 +45,12 @@ import com.scottsea.autoprompter.core.document.toScript
  * editor and the prompt session from the same canonical document; editing dispatches editor
  * reducer actions only; "apply to prompt" materializes the validated document through the public
  * save seam and restarts the session from it.
+ *
+ * Finally it carries a [DocumentLibraryState] mirroring a real, process-only
+ * [InMemoryDocumentStore][com.scottsea.autoprompter.core.document.store.InMemoryDocumentStore] that
+ * the screen owns. The library reducer folds observed store outcomes into UI state; the tracer's
+ * pure helpers here wire editor saves and store results together, but the suspend store calls
+ * themselves happen in the Compose layer, never in this pure model.
  */
 data class TracerModel(
     val scenarioIndex: Int,
@@ -47,6 +61,7 @@ data class TracerModel(
     val hypothesisText: String,
     val session: PromptSessionState,
     val editor: EditorState,
+    val library: DocumentLibraryState,
 )
 
 /**
@@ -119,17 +134,30 @@ private val SCENARIOS = listOf(
 /** Scenario labels for the UI's scenario selector, in order. Each label is its document title. */
 fun tracerScenarioNames(): List<String> = SCENARIOS.map { it.document.title }
 
-fun initialTracerModel(): TracerModel = createScenarioModel(index = 0, editorSessionSerial = 0L)
+fun initialTracerModel(): TracerModel =
+    createScenarioModel(
+        index = 0,
+        editorSessionSerial = 0L,
+        library = DocumentLibraryState(),
+    )
 
 /** Switches to [index] under a fresh editor lifetime and primes its first speech hypothesis. */
 fun selectScenario(model: TracerModel, index: Int): TracerModel {
     check(model.editorSessionSerial < Long.MAX_VALUE) {
         "Tracer editor session serial cannot advance beyond Long.MAX_VALUE."
     }
-    return createScenarioModel(index, model.editorSessionSerial + 1L)
+    return createScenarioModel(
+        index = index,
+        editorSessionSerial = model.editorSessionSerial + 1L,
+        library = model.library,
+    )
 }
 
-private fun createScenarioModel(index: Int, editorSessionSerial: Long): TracerModel {
+private fun createScenarioModel(
+    index: Int,
+    editorSessionSerial: Long,
+    library: DocumentLibraryState,
+): TracerModel {
     val scenario = SCENARIOS[index]
     val base = TracerModel(
         scenarioIndex = index,
@@ -143,6 +171,7 @@ private fun createScenarioModel(index: Int, editorSessionSerial: Long): TracerMo
             scenario.document,
             EditorSessionId("tracer-$editorSessionSerial-$index-${scenario.document.id.value}"),
         ),
+        library = library,
     )
     return applyHypothesis(base, scenario.steps.first(), stepIndex = 0)
 }
@@ -216,15 +245,138 @@ fun applyEditorToPrompt(model: TracerModel): TracerModel {
 }
 
 /**
- * The diagnostic "mark saved" control: acknowledges the current edit generation through the reducer
- * so the editor returns to a clean state. This is not persistence -- nothing is written anywhere.
+ * The optimistic precondition for saving the current editor document to the store, derived purely
+ * from the library: if the library has no summary for this document ID it is a fresh create
+ * ([SavePrecondition.MustBeMissing]); otherwise the expected generation is the one the library
+ * currently knows ([SavePrecondition.Matches]). Deletion/recreation is handled by the store's
+ * monotonic generations, so no extra revision bookkeeping is needed here.
  */
-fun markEditorSaved(model: TracerModel): TracerModel =
-    saveCandidate(model.editor).let { candidate ->
-        model.copy(
-            editor = reduceDocumentEditor(
-                model.editor,
-                EditorAction.SaveAcknowledged(candidate.token),
-            ),
+fun storeSavePrecondition(model: TracerModel): SavePrecondition {
+    val known = model.library.summaries.firstOrNull { it.id == model.editor.documentId }
+    return if (known == null) {
+        SavePrecondition.MustBeMissing
+    } else {
+        SavePrecondition.Matches(known.generation)
+    }
+}
+
+/**
+ * The saved library summary the diagnostic delete control acts on: the currently selected library
+ * entry, or null when nothing live is selected.
+ */
+fun selectedLibraryEntry(model: TracerModel): DocumentSummary? =
+    model.library.selectedId?.let { id -> model.library.summaries.firstOrNull { it.id == id } }
+
+/** Installs a freshly loaded store listing into the library. */
+fun applyLibraryListing(model: TracerModel, summaries: List<DocumentSummary>): TracerModel =
+    model.copy(library = reduceDocumentLibrary(model.library, LibraryAction.LibraryLoaded(summaries)))
+
+/**
+ * Folds a store save [outcome] for the save represented by [token] into the model. On success the
+ * editor acknowledges exactly that save token (returning to clean) and the library upserts and
+ * selects the new snapshot. On an optimistic conflict the editor stays dirty and the library
+ * retains the typed conflict; nothing is acknowledged. This is the only save-clean path -- the
+ * editor is never marked saved before the store confirms.
+ */
+fun applyStoreSaveOutcome(
+    model: TracerModel,
+    token: SaveToken,
+    outcome: SaveOutcome,
+    selectionAtRequest: DocumentId?,
+): TracerModel =
+    when (outcome) {
+        is SaveOutcome.Saved -> {
+            require(outcome.snapshot.document.id == token.documentId) {
+                "Saved document ${outcome.snapshot.document.id.value} does not match token " +
+                    "${token.documentId.value}."
+            }
+            val currentEditor = model.editor
+            val tokenMatchesCurrentEditor =
+                token.sessionId == currentEditor.sessionId &&
+                    token.documentId == currentEditor.documentId &&
+                    token.generation <= currentEditor.editGeneration
+            val selectionIsUnchanged = model.library.selectedId == selectionAtRequest
+            model.copy(
+                editor =
+                    if (tokenMatchesCurrentEditor) {
+                        reduceDocumentEditor(currentEditor, EditorAction.SaveAcknowledged(token))
+                    } else {
+                        currentEditor
+                    },
+                    library = reduceDocumentLibrary(
+                        model.library,
+                        LibraryAction.SaveObserved(
+                            outcome = outcome,
+                            selectSaved = tokenMatchesCurrentEditor && selectionIsUnchanged,
+                        ),
+                    ),
+            )
+        }
+        is SaveOutcome.Conflict -> model.copy(
+            library = reduceDocumentLibrary(model.library, LibraryAction.SaveObserved(outcome)),
         )
     }
+
+/** Folds a store delete [outcome] into the library, preserving the editor draft in every case. */
+fun applyStoreDeleteOutcome(model: TracerModel, outcome: DeleteOutcome): TracerModel =
+    model.copy(library = reduceDocumentLibrary(model.library, LibraryAction.DeleteObserved(outcome)))
+
+/**
+ * Loads a saved [snapshot] into the tracer: it selects it in the library, records the loaded
+ * snapshot, and restarts the document, prompt session, and editor from that document under a fresh
+ * [EditorSessionId] (so any stale save token from the previous editor lifetime is invalid).
+ */
+fun loadSavedDocument(model: TracerModel, snapshot: StoredDocument): TracerModel {
+    check(model.editorSessionSerial < Long.MAX_VALUE) {
+        "Tracer editor session serial cannot advance beyond Long.MAX_VALUE."
+    }
+    val serial = model.editorSessionSerial + 1L
+    val document = snapshot.document
+    val selected = reduceDocumentLibrary(model.library, LibraryAction.Select(document.id))
+    return model.copy(
+        editorSessionSerial = serial,
+        document = document,
+        stepIndex = -1,
+        hypothesisText = "",
+        session = startPromptSession(document.toScript()),
+        editor = startDocumentEditor(
+            document,
+            EditorSessionId("tracer-$serial-load-${document.id.value}"),
+        ),
+        library = reduceDocumentLibrary(selected, LibraryAction.DocumentLoaded(snapshot)),
+    )
+}
+
+/**
+ * Applies a completed load only while the editor and selected library target still match the
+ * request that started it. Newer edits, scenario changes, or library selections supersede it.
+ */
+fun applyLoadedDocumentIfCurrent(
+    model: TracerModel,
+    snapshot: StoredDocument,
+    requestedSession: EditorSessionId,
+    requestedGeneration: Long,
+    requestedId: DocumentId,
+): TracerModel {
+    require(snapshot.document.id == requestedId) {
+        "Loaded document ${snapshot.document.id.value} does not match request ${requestedId.value}."
+    }
+    val requestedSummary = model.library.summaries.firstOrNull { it.id == requestedId }
+    val requestIsCurrent =
+        model.editor.sessionId == requestedSession &&
+            model.editor.editGeneration == requestedGeneration &&
+            model.library.selectedId == requestedId &&
+            requestedSummary?.generation == snapshot.generation
+    return if (requestIsCurrent) loadSavedDocument(model, snapshot) else model
+}
+
+/** Dismisses the retained library conflict, if any. */
+fun clearLibraryConflict(model: TracerModel): TracerModel =
+    model.copy(library = reduceDocumentLibrary(model.library, LibraryAction.ClearConflict))
+
+/**
+ * Selects a saved library entry by [id] without loading it into the editor. Throws through the
+ * library reducer if the id is not a known live summary.
+ */
+fun selectLibraryEntry(model: TracerModel, id: DocumentId): TracerModel =
+    model.copy(library = reduceDocumentLibrary(model.library, LibraryAction.Select(id)))

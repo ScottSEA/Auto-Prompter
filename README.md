@@ -63,16 +63,20 @@ transition through this reducer and shows the current mode, so the UI cannot dri
 
 The shared tracer screen exercises both layers through named scenarios (continuation, ad-lib
 insertion, skipped words, repeated phrase), and each scenario now originates from a canonical
-`ScriptDocument` (see below) rather than a raw string. 66 core behavior tests in `:core:jvmTest`
+`ScriptDocument` (see below) rather than a raw string. 91 core behavior tests in `:core:jvmTest`
 pin these behaviors: 16 aligner tests plus the state bounds, 8 reducer tests covering following,
 manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 document tests
 covering construction/validation, plain-text import, JSON round trip and error handling, and
-document-to-script conversion, and 21 document-editor tests (see below). 12 shared UI-model tests
+document-to-script conversion, 21 document-editor tests (see below), 9 `DocumentStore` contract
+tests, and 16 document-library reducer tests (both see below). 21 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
-expected document identity/title and starts prompting from the document's converted `Script`, and
-the diagnostic editor flow: editing marks the draft dirty, applying a valid draft restarts
-prompting from the edited document, an invalid draft is not applicable, and mark-saved returns the
-editor to clean.
+expected document identity/title and starts prompting from the document's converted `Script`,
+the diagnostic editor flow (editing marks the draft dirty, applying a valid draft restarts
+prompting from the edited document, an invalid draft is not applicable), and the reference-store
+save/select/load/delete flow: a save creates generation 1 and only then returns the editor to
+clean, a second save advances to generation 2, a stale save conflicts and leaves the editor
+dirty with a typed store conflict, delete removes the entry, and loading a saved entry restarts
+the editor and prompt under a fresh session.
 
 ## The canonical script document
 
@@ -159,15 +163,78 @@ The tracer hosts a **clearly labelled diagnostic editor section** over this redu
 first-block text fields plus deterministic controls to append a paragraph, remove or move a block,
 `Apply to prompt` (enabled only when the draft validates -- it obtains the validated document
 through the shared save seam, replaces `TracerModel.document`, and restarts `PromptSession` from
-`document.toScript()`, preserving the editor draft), and a `Mark saved` control that acknowledges
-the current generation to demonstrate the clean state. This section is **shared Compose for
-diagnostics only**; per the architecture the production web editor remains a DOM island, and this
-is not persistence. Scenario selection replaces editor, document, and session together from the
-same canonical document; Reset resets prompting only and leaves the editor draft untouched.
+`document.toScript()`, preserving the editor draft), and a `Save to library` control that persists
+the validated document through the shared `DocumentStore` (see below) and, **only after the store
+confirms**, acknowledges the current generation so the editor returns to clean. A companion
+reference-library section lists saved entries with their generations and offers `Select`, `Load`
+(restart editor + prompt from the saved snapshot under a fresh `EditorSessionId`), and
+`Delete selected`. This section is **shared Compose for diagnostics only**; per the architecture
+the production web editor remains a DOM island, and the in-memory store is **not persistence**.
+Scenario selection replaces editor, document, and session together from the same canonical
+document while preserving the store-backed library state; Reset resets prompting only and leaves
+the editor draft untouched.
+
+## The shared document store
+
+The persistence seam is an asynchronous, optimistic-concurrency `DocumentStore`
+(`com.scottsea.autoprompter.core.document.store`) that later slices will implement over Room
+(Android) and IndexedDB (web). This slice ships the interface, a reusable contract test suite, and
+one **in-memory reference adapter** that proves the semantics those production adapters must
+satisfy. **The reference adapter is not persistence: it holds everything in process memory and
+loses all documents when the process ends -- there is no restart persistence yet.**
+
+Concurrency is optimistic and explicit, never nullable magic. Each document ID carries a
+**monotonic `StoreGeneration`** (an inline `Long`, rejecting negatives): the first successful
+mutation for an ID is generation 1, and every later successful save or delete increments it by
+exactly one. Generations are monotonic **across delete/recreate**: deleting exposes a *tombstone*
+generation, and recreating resumes at tombstone + 1. Callers pin their intent with a sealed
+`SavePrecondition` -- `MustBeMissing` (a fresh create) or `Matches(generation)` (an update of a
+known live generation). The store answers reads and conflicts with a sealed `DocumentState` that
+distinguishes never-created and missing-after-delete from live: `Live(snapshot)` or
+`Missing(id, lastGeneration)`, where a null `lastGeneration` means never created and a non-null one
+is the tombstone. `save` and `delete` return sealed `SaveOutcome`/`DeleteOutcome` values --
+`Saved`/`Deleted` or `Conflict(current)` exposing the current `DocumentState`. **Expected optimistic
+conflicts never throw**; only genuinely invalid input (guarded by the value types) does.
+
+This is what makes the seam **ABA-safe**: create gen 1, delete (tombstone gen 2), recreate
+(gen 3) -- a stale writer still holding `Matches(1)` conflicts instead of silently clobbering the
+recreated document. The store also owns **defensive snapshots**: neither the stored blocks nor the
+returned summary list can be mutated by a caller to affect stored state.
+
+The reference adapter (`InMemoryDocumentStore`) is concurrency-safe and deterministic with **no
+global singleton**: a single `Mutex` serializes every suspend operation, it keeps live records plus
+the last generation per ID (so tombstones survive delete), `list()` returns a fresh immutable list
+of live summaries ordered deterministically by title then ID, and a failed precondition mutates and
+increments nothing. There is no silent fallback or broad catch. 9 contract behaviors run against it
+through `DocumentStoreContract` (a functional runner, not an inheritance framework, so Room and
+IndexedDB adapters can reuse it): never-created reads, first create at gen 1, `MustBeMissing`
+conflict on a live doc, `Matches` update vs stale-conflict, delete + tombstone vs stale/missing
+delete, ABA-protected recreate, independent per-ID sequences with deterministic ordering, defensive
+aliasing, and a concurrent same-precondition race where exactly one save wins and one conflicts.
+
+## The document-library reducer
+
+A pure `DocumentLibrary` reducer (`com.scottsea.autoprompter.core.document.library`) folds observed
+store outcomes into UI state without performing any suspend effect itself -- the UI/effect layer
+calls the store and dispatches the results. `DocumentLibraryState` carries a `LibraryStatus`
+(`Loading`/`Ready`/`Failed`), the deterministic live summaries, the selected document ID, a per-ID
+map of loaded snapshots, and the latest typed store conflict (a `DocumentState`). `reduceDocumentLibrary`
+installs a listing with a valid selection (falling back explicitly when the selected ID is gone),
+fails an unknown selection explicitly, upserts and selects on save success, removes and selects a
+deterministic fallback on delete success, preserves current UI data while exposing the typed
+conflict on a save/delete conflict, and clears the conflict on demand. State snapshots its public
+collections defensively and rejects duplicate summary IDs. 16 tests pin these behaviors.
+
+Async diagnostic callbacks transform the latest `TracerModel` rather than replacing it with the
+model captured when an operation started. A late successful save always updates the library, but
+only acknowledges the editor when its issued token still matches the current editor session;
+scenario changes and newer edits are therefore not overwritten by delayed results. Late saves also
+preserve any library selection made after the save started, and loads are applied only while the
+editor session, generation, requested selected document, and requested stored generation still match.
 
 **Non-goals in this slice:** no persistence, autosave, undo/redo history, rich text, or the eventual
 DOM editor island -- and no schema v2. The pinned schema-v1 wire contract and `ScriptDocument`'s
-immutable-block guarantee are unchanged.
+immutable-block guarantee are unchanged. The Room and IndexedDB store adapters remain next slices.
 
 ## Toolchain
 
@@ -176,7 +243,13 @@ Versions come from the official Kotlin/KMP-App-Template baseline (commit `63ff24
 The canonical document format uses `kotlinx-serialization-json` **1.11.0** (the latest stable
 release, built against the Kotlin 2.3.x line per its published tooling metadata); the serialization
 compiler plugin ships with Kotlin, so it is pinned to the Kotlin version in the version catalog.
-Requires JDK 17 and an Android SDK; set its location in `local.properties`:
+The shared store seam and its tests use `kotlinx-coroutines` **1.11.0** -- the latest stable release
+on Maven Central (`<release>1.11.0</release>`, published 2026-05-07), whose multiplatform artifacts
+publish the `wasmJs` klibs this project needs and whose Kotlin-2.x stable library metadata is
+forward-consumable by the 2.3.21 compiler. `kotlinx-coroutines-core` is a `commonMain` dependency of
+both `:core` and `:ui`; `kotlinx-coroutines-test` is a `commonTest` dependency used to drive the
+suspend store operations deterministically under `runTest`. Requires JDK 17 and an Android SDK; set
+its location in `local.properties`:
 
 ```
 sdk.dir=C\:\\Users\\<you>\\AppData\\Local\\Android\\Sdk
@@ -194,6 +267,9 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 
 # Android debug APK -> androidApp/build/outputs/apk/debug/
 ./gradlew :androidApp:assembleDebug
+
+# Android lint (report -> androidApp/build/reports/lint-results-debug.html)
+./gradlew :androidApp:lintDebug
 
 # Deployable web preview -> webApp/build/dist/wasmJs/productionExecutable/
 ./gradlew :webApp:wasmJsBrowserDistribution

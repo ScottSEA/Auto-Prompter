@@ -18,9 +18,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.SpanStyle
@@ -36,6 +38,14 @@ import com.scottsea.autoprompter.core.document.BlockId
 import com.scottsea.autoprompter.core.document.editor.EditorAction
 import com.scottsea.autoprompter.core.document.editor.EditorValidationIssue
 import com.scottsea.autoprompter.core.document.editor.paragraphDraft
+import com.scottsea.autoprompter.core.document.editor.saveCandidate
+import com.scottsea.autoprompter.core.document.library.DocumentLibraryState
+import com.scottsea.autoprompter.core.document.store.DocumentState
+import com.scottsea.autoprompter.core.document.store.DocumentStore
+import com.scottsea.autoprompter.core.document.store.DocumentSummary
+import com.scottsea.autoprompter.core.document.store.InMemoryDocumentStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /** Platform composition roots call this single shared entry point. */
@@ -52,6 +62,20 @@ fun TracerApp() {
 @Composable
 fun TracerScreen() {
     var model by remember { mutableStateOf(initialTracerModel()) }
+    val updateModel: ((TracerModel) -> TracerModel) -> Unit = { transform ->
+        model = transform(model)
+    }
+
+    // One process-only reference store for the whole diagnostic session. This is NOT persistence:
+    // everything it holds is lost when the process ends. Production Room/IndexedDB adapters arrive
+    // in later slices behind the same DocumentStore seam.
+    val store: DocumentStore = remember { InMemoryDocumentStore() }
+    val scope = rememberCoroutineScope()
+
+    // Prime the library from the store's current live listing on first composition.
+    LaunchedEffect(store) {
+        model = applyLibraryListing(model, store.list())
+    }
 
     val committed = model.session.follow.committedTokens
     val total = model.session.script.tokenCount
@@ -132,7 +156,9 @@ fun TracerScreen() {
 
         DiagnosticEditorSection(
             model = model,
-            onModelChange = { model = it },
+            updateModel = updateModel,
+            store = store,
+            scope = scope,
         )
     }
 }
@@ -150,7 +176,9 @@ fun TracerScreen() {
 @Composable
 private fun DiagnosticEditorSection(
     model: TracerModel,
-    onModelChange: (TracerModel) -> Unit,
+    updateModel: ((TracerModel) -> TracerModel) -> Unit,
+    store: DocumentStore,
+    scope: CoroutineScope,
 ) {
     val editor = model.editor
     val firstBlock = editor.blocks.firstOrNull()
@@ -174,7 +202,9 @@ private fun DiagnosticEditorSection(
 
             OutlinedTextField(
                 value = editor.title,
-                onValueChange = { onModelChange(editTracer(model, EditorAction.ChangeTitle(it))) },
+                onValueChange = { raw ->
+                    updateModel { current -> editTracer(current, EditorAction.ChangeTitle(raw)) }
+                },
                 label = { Text("Title") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -183,8 +213,10 @@ private fun DiagnosticEditorSection(
             if (firstBlock != null) {
                 OutlinedTextField(
                     value = firstBlock.text,
-                    onValueChange = {
-                        onModelChange(editTracer(model, EditorAction.ChangeBlockText(firstBlock.id, it)))
+                    onValueChange = { raw ->
+                        updateModel { current ->
+                            editTracer(current, EditorAction.ChangeBlockText(firstBlock.id, raw))
+                        }
                     },
                     label = { Text("First block text") },
                     modifier = Modifier.fillMaxWidth(),
@@ -200,35 +232,184 @@ private fun DiagnosticEditorSection(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedButton(onClick = { onModelChange(appendDiagnosticBlock(model)) }) {
+                OutlinedButton(onClick = { updateModel(::appendDiagnosticBlock) }) {
                     Text("Append paragraph")
                 }
                 OutlinedButton(
                     onClick = {
-                        firstBlock?.let {
-                            onModelChange(editTracer(model, EditorAction.DeleteBlock(it.id)))
+                        updateModel { current ->
+                            current.editor.blocks.firstOrNull()?.let {
+                                editTracer(current, EditorAction.DeleteBlock(it.id))
+                            } ?: current
                         }
                     },
                 ) { Text("Remove first block") }
                 OutlinedButton(
                     onClick = {
-                        firstBlock?.let {
-                            onModelChange(editTracer(model, EditorAction.MoveBlock(it.id, editor.blocks.lastIndex)))
+                        updateModel { current ->
+                            current.editor.blocks.firstOrNull()?.let {
+                                editTracer(
+                                    current,
+                                    EditorAction.MoveBlock(it.id, current.editor.blocks.lastIndex),
+                                )
+                            } ?: current
                         }
                     },
                 ) { Text("Move first to end") }
                 Button(
-                    onClick = { onModelChange(applyEditorToPrompt(model)) },
+                    onClick = { updateModel(::applyEditorToPrompt) },
                     enabled = canApplyEditor(model),
                 ) { Text("Apply to prompt") }
+                Button(
+                    onClick = {
+                        // Persist the validated candidate through the reference store, then fold the
+                        // outcome back in. The editor is acknowledged (clean) ONLY after the store
+                        // confirms; a conflict leaves it dirty and surfaces a typed store conflict.
+                        val candidate = saveCandidate(model.editor)
+                        val precondition = storeSavePrecondition(model)
+                        val selectionAtRequest = model.library.selectedId
+                        scope.launch {
+                            val outcome = store.save(candidate.document, precondition)
+                            updateModel { current ->
+                                applyStoreSaveOutcome(
+                                    model = current,
+                                    token = candidate.token,
+                                    outcome = outcome,
+                                    selectionAtRequest = selectionAtRequest,
+                                )
+                            }
+                        }
+                    },
+                    enabled = canApplyEditor(model),
+                ) { Text("Save to library") }
+            }
+
+            DiagnosticLibrarySection(
+                model = model,
+                updateModel = updateModel,
+                store = store,
+                scope = scope,
+            )
+        }
+    }
+}
+
+/**
+ * Diagnostic view over the reference [DocumentStore]: lists saved entries with their monotonic
+ * generations, lets a saved entry be selected and loaded back into the editor/prompt under a fresh
+ * session, and deletes the selected entry. All store calls are suspend calls launched on [scope];
+ * the business decisions live in the pure tracer/library helpers, not in this Composable.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DiagnosticLibrarySection(
+    model: TracerModel,
+    updateModel: ((TracerModel) -> TracerModel) -> Unit,
+    store: DocumentStore,
+    scope: CoroutineScope,
+) {
+    val library: DocumentLibraryState = model.library
+    val selected: DocumentSummary? = selectedLibraryEntry(model)
+
+    Text("Reference library (process-only; not durable)", style = MaterialTheme.typography.titleSmall)
+    Text(
+        "In-memory reference store. Entries are lost when the process ends; no restart persistence yet.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+
+    if (library.summaries.isEmpty()) {
+        Text("(no saved documents yet)", style = MaterialTheme.typography.bodySmall)
+    } else {
+        library.summaries.forEach { summary ->
+            val isSelected = summary.id == library.selectedId
+            val marker = if (isSelected) "> " else "  "
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    "$marker${summary.title} — gen ${summary.generation.value} (${summary.id.value})",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 OutlinedButton(
-                    onClick = { onModelChange(markEditorSaved(model)) },
-                    enabled = editor.isDirty && canApplyEditor(model),
-                ) { Text("Mark saved") }
+                    onClick = {
+                        updateModel { current -> selectLibraryEntry(current, summary.id) }
+                    },
+                ) {
+                    Text("Select")
+                }
+                OutlinedButton(
+                    onClick = {
+                        val requestedId = summary.id
+                        val requestedSession = model.editor.sessionId
+                        val requestedGeneration = model.editor.editGeneration
+                        updateModel { current -> selectLibraryEntry(current, requestedId) }
+                        scope.launch {
+                            val current = store.load(requestedId)
+                            if (current != null) {
+                                updateModel { latest ->
+                                    applyLoadedDocumentIfCurrent(
+                                        model = latest,
+                                        snapshot = current,
+                                        requestedSession = requestedSession,
+                                        requestedGeneration = requestedGeneration,
+                                        requestedId = requestedId,
+                                    )
+                                }
+                            } else {
+                                // The entry vanished from under us; refresh the listing so the UI
+                                // reflects the store's real state instead of guessing.
+                                val listing = store.list()
+                                updateModel { latest -> applyLibraryListing(latest, listing) }
+                            }
+                        }
+                    },
+                ) { Text("Load") }
+            }
+        }
+    }
+
+    val conflict = library.conflict
+    if (conflict != null) {
+        Text("Store conflict: ${describeConflict(conflict)}", style = MaterialTheme.typography.bodySmall)
+    }
+
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        OutlinedButton(
+            onClick = {
+                val target = selected ?: return@OutlinedButton
+                scope.launch {
+                    val outcome = store.delete(target.id, target.generation)
+                    updateModel { current -> applyStoreDeleteOutcome(current, outcome) }
+                }
+            },
+            enabled = selected != null,
+        ) { Text("Delete selected") }
+        if (conflict != null) {
+            OutlinedButton(onClick = { updateModel(::clearLibraryConflict) }) {
+                Text("Clear conflict")
             }
         }
     }
 }
+
+/** A concise, human-readable label for a typed store conflict state, for the diagnostic display. */
+private fun describeConflict(state: DocumentState): String =
+    when (state) {
+        is DocumentState.Live ->
+            "live gen ${state.snapshot.generation.value} (${state.snapshot.document.id.value})"
+        is DocumentState.Missing -> {
+            val last = state.lastGeneration
+            if (last == null) {
+                "missing, never created (${state.id.value})"
+            } else {
+                "missing, tombstone gen ${last.value} (${state.id.value})"
+            }
+        }
+    }
 
 /** Appends a deterministic paragraph block whose id is derived from the current edit generation. */
 private fun appendDiagnosticBlock(model: TracerModel): TracerModel {

@@ -62,26 +62,6 @@ class TracerEditorTest {
     }
 
     @Test
-    fun markSavedAcknowledgesTheCurrentGenerationAndReturnsToClean() {
-        val edited = editTracer(initialTracerModel(), EditorAction.ChangeTitle("Renamed"))
-        assertTrue(edited.editor.isDirty)
-
-        val saved = markEditorSaved(edited)
-
-        assertFalse(saved.editor.isDirty)
-    }
-
-    @Test
-    fun invalidDraftCannotBeMarkedSaved() {
-        val model = initialTracerModel()
-        val firstBlock = model.editor.blocks.first().id
-        val invalid = editTracer(model, EditorAction.ChangeBlockText(firstBlock, ""))
-
-        assertFailsWith<InvalidEditorDocumentException> { markEditorSaved(invalid) }
-        assertTrue(invalid.editor.isDirty)
-    }
-
-    @Test
     fun resetPromptingLeavesTheEditorDraftUntouched() {
         val edited = editTracer(initialTracerModel(), EditorAction.ChangeTitle("Draft in progress"))
 
