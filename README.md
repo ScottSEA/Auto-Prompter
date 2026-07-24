@@ -11,8 +11,8 @@ Compose screen that runs unchanged on Android and in the browser.
 
 | Module        | Type                              | Responsibility |
 |---------------|-----------------------------------|----------------|
-| `:core`       | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain, the canonical serializable `ScriptDocument` format, the public `ScriptFollower` follow interface, and the pure `reducePromptSession` session state machine. |
-| `:ui`         | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen. Dispatches all intent through `:core`'s reducer; holds no alignment or mode logic of its own. |
+| `:core`       | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain, the canonical serializable `ScriptDocument` format, the pure document-editor reducer, the public `ScriptFollower` follow interface, and the pure `reducePromptSession` session state machine. |
+| `:ui`         | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen with a diagnostic document-editor section. Dispatches all intent through `:core`'s reducers; holds no alignment, mode, or editing logic of its own. |
 | `:androidApp` | Android application                | Android launcher (`MainActivity`) hosting the shared screen. |
 | `:webApp`     | Kotlin/Wasm Compose executable     | Browser composition root serving the shared screen. |
 
@@ -63,18 +63,21 @@ transition through this reducer and shows the current mode, so the UI cannot dri
 
 The shared tracer screen exercises both layers through named scenarios (continuation, ad-lib
 insertion, skipped words, repeated phrase), and each scenario now originates from a canonical
-`ScriptDocument` (see below) rather than a raw string. 45 core behavior tests in `:core:jvmTest`
+`ScriptDocument` (see below) rather than a raw string. 66 core behavior tests in `:core:jvmTest`
 pin these behaviors: 16 aligner tests plus the state bounds, 8 reducer tests covering following,
-manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, and 21 document tests
+manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 document tests
 covering construction/validation, plain-text import, JSON round trip and error handling, and
-document-to-script conversion. 4 shared UI-model tests in `:ui:jvmTest` pin the Reset button's
-reducer wiring and that scenario selection carries the expected document identity/title and starts
-prompting from the document's converted `Script`.
+document-to-script conversion, and 21 document-editor tests (see below). 12 shared UI-model tests
+in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
+expected document identity/title and starts prompting from the document's converted `Script`, and
+the diagnostic editor flow: editing marks the draft dirty, applying a valid draft restarts
+prompting from the edited document, an invalid draft is not applicable, and mark-saved returns the
+editor to clean.
 
 ## The canonical script document
 
 `ScriptDocument` is the first slice of the durable, portable document format that shared code owns.
-It is immutable and `@Serializable`, and carries an explicit `schemaVersion`, a stable
+It is immutable, serialized through a private pinned wire DTO, and carries an explicit `schemaVersion`, a stable
 `DocumentId`, a non-blank `title`, and an ordered list of `ScriptBlock`s. Each block has a stable
 `BlockId`, a `ScriptBlockKind` (`Paragraph` or `Heading` in this slice), and non-blank `text`.
 `DocumentId` and `BlockId` are inline value classes that reject blank values. The current schema is
@@ -108,6 +111,63 @@ stored on the document. The tracer, Android, and web paths all start their sessi
 **This is the in-memory model and its plain-text/JSON conversions only.** Persistence, files,
 IndexedDB, Drive sync, and Markdown/DOCX/PDF import-export are explicitly *not* implemented yet;
 they arrive with their own storage and sync milestones.
+
+## The document editor reducer
+
+`ScriptDocument` can never hold a blank title, no blocks, or blank block text -- but a person
+editing *must* be able to clear a title or a block while typing. So the editor slice
+(`com.scottsea.autoprompter.core.document.editor`) adds a realistic editing seam that does **not**
+force every keystroke through `ScriptDocument` construction. `EditorState` is an immutable snapshot
+that identifies the source document (`schemaVersion`, `documentId`), carries an editable `title`
+and ordered editable `blocks` (each a `BlockDraft` with a stable non-blank `BlockId`, a
+`ScriptBlockKind`, and possibly-blank `text`), an `EditorSessionId`, and tracks an `editGeneration`
+and a `savedGeneration`. Draft title and block text may be transiently blank and the block list may be
+empty; those are surfaced as derived, typed `EditorValidationIssue`s (`BlankTitle`, `NoBlocks`,
+`BlankBlockText(id)`) rather than thrown. `isDirty` and `issues` are derived, not stored, and the
+state defensively snapshots its block list so neither a caller's source list nor an exposed
+`blocks` read can mutate it. Block IDs are guaranteed unique.
+
+`startDocumentEditor(document)` and `reduceDocumentEditor(state, action)` are the pure entry
+points. `EditorAction` is a sealed vocabulary of semantic intents -- `ChangeTitle`,
+`ChangeBlockText`, `ChangeBlockKind`, `InsertBlock`, `DeleteBlock`, `MoveBlock`, `SaveAcknowledged`,
+`ReplaceFromDocument` -- never keystrokes; adapters translate their inputs into these. An
+*effective* edit advances `editGeneration` by exactly one; a true no-op (e.g. re-typing the same
+text, or `MoveBlock` to the same resting index) returns the same state with no advance. `MoveBlock`
+targets the block's final resting index in `0..lastIndex`. The `Long.MAX_VALUE` generation ceiling
+is guarded explicitly. External invalid inputs fail fast with an informative
+`IllegalArgumentException`: an unknown block ID, a duplicate inserted ID, an insert index outside
+`0..size`, a move target outside `0..lastIndex`, or a save token from another document/editor session.
+Deleting the last block is *not* an error -- it is a legal, incomplete draft that reports a
+`NoBlocks` issue.
+
+`documentForSave(state)` is the validation seam: it materializes the canonical `ScriptDocument` when the
+draft validates, or throws `InvalidEditorDocumentException` exposing the exact typed `issues` list
+-- never a null or silent fallback. `saveCandidate(state)` issues a non-forgeable `SaveToken` scoped
+to the document, editor session, and current generation, paired with that validated document.
+`SaveAcknowledged(token)` accepts only such an issued token for the current document/editor lifetime
+and advances `savedGeneration` monotonically. An invalid draft cannot issue a token, a late
+completion from a replaced editor is rejected, and a stale acknowledgement from the same editor
+cannot make newer edits clean. Opening or replacing a document requires a fresh `EditorSessionId`;
+the tracer increments its editor-session serial even when the same scenario is reopened.
+
+21 tests in `:core:jvmTest` pin start/copy, blank-tolerant title/block edits with typed issues,
+generation no-op-vs-effective semantics, block kind change, insert/delete/move (including bounds and
+the `NoBlocks`-on-empty rule), the save-seam round trip and typed rejection, the
+dirty/stale/session-scoped acknowledgement rules, defensive aliasing, and the generation-overflow guard.
+
+The tracer hosts a **clearly labelled diagnostic editor section** over this reducer: title and
+first-block text fields plus deterministic controls to append a paragraph, remove or move a block,
+`Apply to prompt` (enabled only when the draft validates -- it obtains the validated document
+through the shared save seam, replaces `TracerModel.document`, and restarts `PromptSession` from
+`document.toScript()`, preserving the editor draft), and a `Mark saved` control that acknowledges
+the current generation to demonstrate the clean state. This section is **shared Compose for
+diagnostics only**; per the architecture the production web editor remains a DOM island, and this
+is not persistence. Scenario selection replaces editor, document, and session together from the
+same canonical document; Reset resets prompting only and leaves the editor draft untouched.
+
+**Non-goals in this slice:** no persistence, autosave, undo/redo history, rich text, or the eventual
+DOM editor island -- and no schema v2. The pinned schema-v1 wire contract and `ScriptDocument`'s
+immutable-block guarantee are unchanged.
 
 ## Toolchain
 

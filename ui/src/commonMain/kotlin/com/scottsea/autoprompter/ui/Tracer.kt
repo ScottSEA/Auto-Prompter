@@ -10,6 +10,13 @@ import com.scottsea.autoprompter.core.document.DocumentId
 import com.scottsea.autoprompter.core.document.ScriptBlock
 import com.scottsea.autoprompter.core.document.ScriptBlockKind
 import com.scottsea.autoprompter.core.document.ScriptDocument
+import com.scottsea.autoprompter.core.document.editor.EditorAction
+import com.scottsea.autoprompter.core.document.editor.EditorSessionId
+import com.scottsea.autoprompter.core.document.editor.EditorState
+import com.scottsea.autoprompter.core.document.editor.documentForSave
+import com.scottsea.autoprompter.core.document.editor.reduceDocumentEditor
+import com.scottsea.autoprompter.core.document.editor.saveCandidate
+import com.scottsea.autoprompter.core.document.editor.startDocumentEditor
 import com.scottsea.autoprompter.core.document.importPlainText
 import com.scottsea.autoprompter.core.document.toScript
 
@@ -24,14 +31,22 @@ import com.scottsea.autoprompter.core.document.toScript
  * Each scenario originates from a canonical [ScriptDocument]; the session is always started from
  * [ScriptDocument.toScript], so the UI shares the exact document-to-script seam with any future
  * editor or persistence path and never re-parses script text of its own.
+ *
+ * The tracer also carries an [EditorState] for the selected document so the diagnostic editor
+ * section can demonstrate the shared document-editor reducer. Selecting a scenario starts both the
+ * editor and the prompt session from the same canonical document; editing dispatches editor
+ * reducer actions only; "apply to prompt" materializes the validated document through the public
+ * save seam and restarts the session from it.
  */
 data class TracerModel(
     val scenarioIndex: Int,
+    val editorSessionSerial: Long,
     val document: ScriptDocument,
     val steps: List<String>,
     val stepIndex: Int,
     val hypothesisText: String,
     val session: PromptSessionState,
+    val editor: EditorState,
 )
 
 /**
@@ -104,18 +119,30 @@ private val SCENARIOS = listOf(
 /** Scenario labels for the UI's scenario selector, in order. Each label is its document title. */
 fun tracerScenarioNames(): List<String> = SCENARIOS.map { it.document.title }
 
-fun initialTracerModel(): TracerModel = selectScenario(0)
+fun initialTracerModel(): TracerModel = createScenarioModel(index = 0, editorSessionSerial = 0L)
 
-/** Switches to the scenario at [index], starting a fresh prompt session and priming its first hypothesis. */
-fun selectScenario(index: Int): TracerModel {
+/** Switches to [index] under a fresh editor lifetime and primes its first speech hypothesis. */
+fun selectScenario(model: TracerModel, index: Int): TracerModel {
+    check(model.editorSessionSerial < Long.MAX_VALUE) {
+        "Tracer editor session serial cannot advance beyond Long.MAX_VALUE."
+    }
+    return createScenarioModel(index, model.editorSessionSerial + 1L)
+}
+
+private fun createScenarioModel(index: Int, editorSessionSerial: Long): TracerModel {
     val scenario = SCENARIOS[index]
     val base = TracerModel(
         scenarioIndex = index,
+        editorSessionSerial = editorSessionSerial,
         document = scenario.document,
         steps = scenario.steps,
         stepIndex = 0,
         hypothesisText = "",
         session = startPromptSession(scenario.document.toScript()),
+        editor = startDocumentEditor(
+            scenario.document,
+            EditorSessionId("tracer-$editorSessionSerial-$index-${scenario.document.id.value}"),
+        ),
     )
     return applyHypothesis(base, scenario.steps.first(), stepIndex = 0)
 }
@@ -158,3 +185,46 @@ private fun applyHypothesis(model: TracerModel, text: String, stepIndex: Int): T
 
 private fun dispatch(model: TracerModel, action: PromptSessionAction): TracerModel =
     model.copy(session = reducePromptSession(model.session, action))
+
+// --- Diagnostic document editor seam ---
+//
+// These are the shared, pure UI-model helpers behind the diagnostic editor section. Every edit goes
+// through the shared [reduceDocumentEditor]; the UI never constructs or validates a document itself.
+
+/** Dispatches a single editor [action] to the tracer's editor draft. */
+fun editTracer(model: TracerModel, action: EditorAction): TracerModel =
+    model.copy(editor = reduceDocumentEditor(model.editor, action))
+
+/** True when the editor draft currently validates and can be applied to the prompt. */
+fun canApplyEditor(model: TracerModel): Boolean = model.editor.issues.isEmpty()
+
+/**
+ * Applies the validated editor draft to the prompt: it materializes the canonical document through
+ * the shared save seam ([documentForSave]), replaces [TracerModel.document], restarts the prompt
+ * session from the edited document's script, and preserves the editor draft untouched. When the
+ * draft is invalid it fails via the save seam rather than silently doing nothing; the UI guards
+ * this with [canApplyEditor].
+ */
+fun applyEditorToPrompt(model: TracerModel): TracerModel {
+    val document = documentForSave(model.editor)
+    return model.copy(
+        document = document,
+        stepIndex = -1,
+        hypothesisText = "",
+        session = startPromptSession(document.toScript()),
+    )
+}
+
+/**
+ * The diagnostic "mark saved" control: acknowledges the current edit generation through the reducer
+ * so the editor returns to a clean state. This is not persistence -- nothing is written anywhere.
+ */
+fun markEditorSaved(model: TracerModel): TracerModel =
+    saveCandidate(model.editor).let { candidate ->
+        model.copy(
+            editor = reduceDocumentEditor(
+                model.editor,
+                EditorAction.SaveAcknowledged(candidate.token),
+            ),
+        )
+    }

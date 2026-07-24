@@ -14,6 +14,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,6 +32,10 @@ import com.scottsea.autoprompter.core.FollowMode
 import com.scottsea.autoprompter.core.coveredText
 import com.scottsea.autoprompter.core.progressIn
 import com.scottsea.autoprompter.core.remainingText
+import com.scottsea.autoprompter.core.document.BlockId
+import com.scottsea.autoprompter.core.document.editor.EditorAction
+import com.scottsea.autoprompter.core.document.editor.EditorValidationIssue
+import com.scottsea.autoprompter.core.document.editor.paragraphDraft
 import kotlin.math.roundToInt
 
 /** Platform composition roots call this single shared entry point. */
@@ -77,9 +82,9 @@ fun TracerScreen() {
         ) {
             tracerScenarioNames().forEachIndexed { index, name ->
                 if (index == model.scenarioIndex) {
-                    Button(onClick = { model = selectScenario(index) }) { Text(name) }
+                    Button(onClick = { model = selectScenario(model, index) }) { Text(name) }
                 } else {
-                    OutlinedButton(onClick = { model = selectScenario(index) }) { Text(name) }
+                    OutlinedButton(onClick = { model = selectScenario(model, index) }) { Text(name) }
                 }
             }
         }
@@ -124,8 +129,121 @@ fun TracerScreen() {
             }
             OutlinedButton(onClick = { model = reset(model) }) { Text("Reset") }
         }
+
+        DiagnosticEditorSection(
+            model = model,
+            onModelChange = { model = it },
+        )
     }
 }
+
+/**
+ * A clearly labelled diagnostic editor section over the shared document-editor reducer.
+ *
+ * This is intentionally shared Compose (title and first-block text fields plus deterministic
+ * block controls) purely to exercise the reducer end to end in the tracer. It is NOT the production
+ * editor: per the architecture the shipping web editor remains a DOM island. Every control here
+ * dispatches an [EditorAction] through the pure UI-model seam and never constructs or validates a
+ * document itself.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DiagnosticEditorSection(
+    model: TracerModel,
+    onModelChange: (TracerModel) -> Unit,
+) {
+    val editor = model.editor
+    val firstBlock = editor.blocks.firstOrNull()
+    val dirtyLabel = if (editor.isDirty) "Dirty (unsaved edits)" else "Clean"
+    val validationLabel = if (editor.issues.isEmpty()) {
+        "Valid draft"
+    } else {
+        "Issues: " + editor.issues.joinToString(", ") { describeIssue(it) }
+    }
+
+    Card {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Diagnostic document editor", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "Shared Compose diagnostic only; the production web editor stays a DOM island.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+
+            OutlinedTextField(
+                value = editor.title,
+                onValueChange = { onModelChange(editTracer(model, EditorAction.ChangeTitle(it))) },
+                label = { Text("Title") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            if (firstBlock != null) {
+                OutlinedTextField(
+                    value = firstBlock.text,
+                    onValueChange = {
+                        onModelChange(editTracer(model, EditorAction.ChangeBlockText(firstBlock.id, it)))
+                    },
+                    label = { Text("First block text") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                Text("(no blocks; append one to continue)", style = MaterialTheme.typography.bodySmall)
+            }
+
+            Text("State: $dirtyLabel", style = MaterialTheme.typography.titleSmall)
+            Text(validationLabel, style = MaterialTheme.typography.bodySmall)
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = { onModelChange(appendDiagnosticBlock(model)) }) {
+                    Text("Append paragraph")
+                }
+                OutlinedButton(
+                    onClick = {
+                        firstBlock?.let {
+                            onModelChange(editTracer(model, EditorAction.DeleteBlock(it.id)))
+                        }
+                    },
+                ) { Text("Remove first block") }
+                OutlinedButton(
+                    onClick = {
+                        firstBlock?.let {
+                            onModelChange(editTracer(model, EditorAction.MoveBlock(it.id, editor.blocks.lastIndex)))
+                        }
+                    },
+                ) { Text("Move first to end") }
+                Button(
+                    onClick = { onModelChange(applyEditorToPrompt(model)) },
+                    enabled = canApplyEditor(model),
+                ) { Text("Apply to prompt") }
+                OutlinedButton(
+                    onClick = { onModelChange(markEditorSaved(model)) },
+                    enabled = editor.isDirty && canApplyEditor(model),
+                ) { Text("Mark saved") }
+            }
+        }
+    }
+}
+
+/** Appends a deterministic paragraph block whose id is derived from the current edit generation. */
+private fun appendDiagnosticBlock(model: TracerModel): TracerModel {
+    val id = BlockId("diagnostic-${model.editor.editGeneration}")
+    val draft = paragraphDraft(id, "Diagnostic paragraph ${model.editor.editGeneration}")
+    return editTracer(model, EditorAction.InsertBlock(model.editor.blocks.size, draft))
+}
+
+/** A concise, human-readable label for a validation issue, for the diagnostic display. */
+private fun describeIssue(issue: EditorValidationIssue): String =
+    when (issue) {
+        is EditorValidationIssue.BlankTitle -> "blank title"
+        is EditorValidationIssue.NoBlocks -> "no blocks"
+        is EditorValidationIssue.BlankBlockText -> "blank block ${issue.id.value}"
+    }
 
 /** Renders the script with the followed (spoken) prefix emphasized. */
 private fun scriptWithProgress(model: TracerModel) = buildAnnotatedString {
