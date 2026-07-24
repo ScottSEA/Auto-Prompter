@@ -9,6 +9,10 @@ androidx-activity = "1.13.0"
 androidx-lifecycle = "2.10.0"
 composeMultiplatform = "1.11.0"
 kotlin = "2.3.21"
+# kotlinx.serialization runtime. 1.11.0 is the latest stable release and was built with the
+# Kotlin 2.3.20 multiplatform plugin (per its kotlin-tooling-metadata), matching this project's
+# Kotlin 2.3.21 line, so the bundled serialization compiler plugin and this runtime agree.
+kotlinxSerialization = "1.11.0"
 material3 = "1.11.0-alpha07"
 
 [libraries]
@@ -20,6 +24,7 @@ compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.re
 compose-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "composeMultiplatform" }
 compose-uiTooling = { module = "org.jetbrains.compose.ui:ui-tooling", version.ref = "composeMultiplatform" }
 compose-uiToolingPreview = { module = "org.jetbrains.compose.ui:ui-tooling-preview", version.ref = "composeMultiplatform" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
@@ -27,3 +32,4 @@ androidMultiplatformLibrary = { id = "com.android.kotlin.multiplatform.library",
 composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

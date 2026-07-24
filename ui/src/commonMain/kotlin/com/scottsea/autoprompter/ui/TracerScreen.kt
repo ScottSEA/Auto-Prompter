@@ -66,6 +66,10 @@ fun TracerScreen() {
             "Architecture tracer bullet: shared core alignment rendered on Android and web.",
             style = MaterialTheme.typography.bodySmall,
         )
+        Text(
+            "Document: ${model.document.title}",
+            style = MaterialTheme.typography.titleSmall,
+        )
 
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),

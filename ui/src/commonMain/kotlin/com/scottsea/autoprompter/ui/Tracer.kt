@@ -3,9 +3,15 @@ package com.scottsea.autoprompter.ui
 import com.scottsea.autoprompter.core.PromptSessionAction
 import com.scottsea.autoprompter.core.PromptSessionState
 import com.scottsea.autoprompter.core.hypothesisOf
-import com.scottsea.autoprompter.core.parseScript
 import com.scottsea.autoprompter.core.reducePromptSession
 import com.scottsea.autoprompter.core.startPromptSession
+import com.scottsea.autoprompter.core.document.BlockId
+import com.scottsea.autoprompter.core.document.DocumentId
+import com.scottsea.autoprompter.core.document.ScriptBlock
+import com.scottsea.autoprompter.core.document.ScriptBlockKind
+import com.scottsea.autoprompter.core.document.ScriptDocument
+import com.scottsea.autoprompter.core.document.importPlainText
+import com.scottsea.autoprompter.core.document.toScript
 
 /**
  * Immutable state for the diagnostic tracer screen.
@@ -14,9 +20,14 @@ import com.scottsea.autoprompter.core.startPromptSession
  * into the shared [PromptSessionState] reducer. It holds no alignment, following, or mode logic
  * of its own: every transition goes through
  * [com.scottsea.autoprompter.core.reducePromptSession], so the UI cannot drift from the engine.
+ *
+ * Each scenario originates from a canonical [ScriptDocument]; the session is always started from
+ * [ScriptDocument.toScript], so the UI shares the exact document-to-script seam with any future
+ * editor or persistence path and never re-parses script text of its own.
  */
 data class TracerModel(
     val scenarioIndex: Int,
+    val document: ScriptDocument,
     val steps: List<String>,
     val stepIndex: Int,
     val hypothesisText: String,
@@ -24,21 +35,37 @@ data class TracerModel(
 )
 
 /**
- * A named, self-contained sequence of simulated recognizer hypotheses. One sample script cannot
- * demonstrate every behavior coherently, so each behavior gets its own labelled scenario.
+ * A named, self-contained sequence of simulated recognizer hypotheses driving a canonical
+ * [document]. One sample script cannot demonstrate every behavior coherently, so each behavior
+ * gets its own labelled scenario, and the scenario's label is its document [ScriptDocument.title].
  */
 private data class TracerScenario(
-    val name: String,
-    val scriptText: String,
+    val document: ScriptDocument,
     val steps: List<String>,
+)
+
+/** Builds a single-paragraph canonical document for scenarios that need no import round trip. */
+private fun canonicalDocument(id: String, title: String, text: String): ScriptDocument =
+    ScriptDocument(
+        id = DocumentId(id),
+        title = title,
+        blocks = listOf(ScriptBlock(BlockId("$id-b0"), ScriptBlockKind.Paragraph, text)),
+    )
+
+// The Continuation scenario exercises the plain-text import path end to end with deterministic,
+// static block IDs so the UI proves import -> document -> script, not just a hand-built document.
+private val continuationDocument: ScriptDocument = importPlainText(
+    id = DocumentId("tracer-continuation"),
+    title = "Continuation",
+    text = "Hello world this is a live tracer for the Auto Prompter follow engine",
+    blockId = { index -> BlockId("continuation-b$index") },
 )
 
 private val SCENARIOS = listOf(
     // Ordinary forward continuation. Combined with the "Revise shorter" control it also shows
     // the monotonic no-regression guarantee.
     TracerScenario(
-        name = "Continuation",
-        scriptText = "Hello world this is a live tracer for the Auto Prompter follow engine",
+        document = continuationDocument,
         steps = listOf(
             "hello world",
             "hello world this is",
@@ -48,8 +75,7 @@ private val SCENARIOS = listOf(
     ),
     // A short ad-lib ("very") is spoken between script words but progress still reaches the fox.
     TracerScenario(
-        name = "Ad-lib insertion",
-        scriptText = "the quick brown fox jumps",
+        document = canonicalDocument("tracer-adlib", "Ad-lib insertion", "the quick brown fox jumps"),
         steps = listOf(
             "the quick",
             "the quick very brown fox",
@@ -57,8 +83,7 @@ private val SCENARIOS = listOf(
     ),
     // The speaker skips "three four"; the surrounding tokens still carry progress to the end.
     TracerScenario(
-        name = "Skipped words",
-        scriptText = "one two three four five six",
+        document = canonicalDocument("tracer-skipped", "Skipped words", "one two three four five six"),
         steps = listOf(
             "one two",
             "one two five six",
@@ -67,8 +92,7 @@ private val SCENARIOS = listOf(
     // "go now" appears twice. After committing past the first occurrence, hearing it again
     // resolves forward to the second occurrence rather than snapping backwards.
     TracerScenario(
-        name = "Repeated phrase",
-        scriptText = "go now pause go now finish",
+        document = canonicalDocument("tracer-repeated", "Repeated phrase", "go now pause go now finish"),
         steps = listOf(
             "go now",
             "go now pause",
@@ -77,8 +101,8 @@ private val SCENARIOS = listOf(
     ),
 )
 
-/** Scenario labels for the UI's scenario selector, in order. */
-fun tracerScenarioNames(): List<String> = SCENARIOS.map { it.name }
+/** Scenario labels for the UI's scenario selector, in order. Each label is its document title. */
+fun tracerScenarioNames(): List<String> = SCENARIOS.map { it.document.title }
 
 fun initialTracerModel(): TracerModel = selectScenario(0)
 
@@ -87,10 +111,11 @@ fun selectScenario(index: Int): TracerModel {
     val scenario = SCENARIOS[index]
     val base = TracerModel(
         scenarioIndex = index,
+        document = scenario.document,
         steps = scenario.steps,
         stepIndex = 0,
         hypothesisText = "",
-        session = startPromptSession(parseScript(scenario.scriptText)),
+        session = startPromptSession(scenario.document.toScript()),
     )
     return applyHypothesis(base, scenario.steps.first(), stepIndex = 0)
 }

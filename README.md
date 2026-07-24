@@ -11,7 +11,7 @@ Compose screen that runs unchanged on Android and in the browser.
 
 | Module        | Type                              | Responsibility |
 |---------------|-----------------------------------|----------------|
-| `:core`       | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain, the public `ScriptFollower` follow interface, and the pure `reducePromptSession` session state machine. |
+| `:core`       | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain, the canonical serializable `ScriptDocument` format, the public `ScriptFollower` follow interface, and the pure `reducePromptSession` session state machine. |
 | `:ui`         | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen. Dispatches all intent through `:core`'s reducer; holds no alignment or mode logic of its own. |
 | `:androidApp` | Android application                | Android launcher (`MainActivity`) hosting the shared screen. |
 | `:webApp`     | Kotlin/Wasm Compose executable     | Browser composition root serving the shared screen. |
@@ -62,15 +62,60 @@ within `0..tokenCount`, and an out-of-range `SeekTo` fails fast with an informat
 transition through this reducer and shows the current mode, so the UI cannot drift from the engine.
 
 The shared tracer screen exercises both layers through named scenarios (continuation, ad-lib
-insertion, skipped words, repeated phrase). 24 core behavior tests in `:core:jvmTest` pin these
-behaviors: 16 aligner tests plus the state bounds, and 8 reducer tests covering following,
-manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement. A shared UI-model test
-also pins the Reset button's reducer wiring.
+insertion, skipped words, repeated phrase), and each scenario now originates from a canonical
+`ScriptDocument` (see below) rather than a raw string. 45 core behavior tests in `:core:jvmTest`
+pin these behaviors: 16 aligner tests plus the state bounds, 8 reducer tests covering following,
+manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, and 21 document tests
+covering construction/validation, plain-text import, JSON round trip and error handling, and
+document-to-script conversion. 4 shared UI-model tests in `:ui:jvmTest` pin the Reset button's
+reducer wiring and that scenario selection carries the expected document identity/title and starts
+prompting from the document's converted `Script`.
+
+## The canonical script document
+
+`ScriptDocument` is the first slice of the durable, portable document format that shared code owns.
+It is immutable and `@Serializable`, and carries an explicit `schemaVersion`, a stable
+`DocumentId`, a non-blank `title`, and an ordered list of `ScriptBlock`s. Each block has a stable
+`BlockId`, a `ScriptBlockKind` (`Paragraph` or `Heading` in this slice), and non-blank `text`.
+`DocumentId` and `BlockId` are inline value classes that reject blank values. The current schema is
+the named constant `CURRENT_SCHEMA_VERSION` (**1**). Construction fails fast with an informative
+`IllegalArgumentException` on an unsupported schema version, a blank title, an empty block list,
+duplicate block IDs, or blank block text, so an invalid document can never be built in memory.
+The document takes defensive block snapshots, preventing a caller's mutable list from changing an
+already validated document.
+
+`importPlainText(id, title, text, blockId)` is a pure, deterministic importer. The caller supplies
+the `DocumentId`, the title, and a `(index) -> BlockId` function so tests and platforms own ID
+generation. It normalizes CRLF/CR to LF, treats one or more blank lines as a paragraph separator,
+joins wrapped non-blank lines within a paragraph with single spaces, trims outer whitespace,
+preserves paragraph order, and produces `Paragraph` blocks only. Blank input is rejected explicitly.
+
+`encodeScriptDocument(document)` and `decodeScriptDocument(json)` are the external format seam. JSON
+is configured intentionally: unknown keys are rejected and defaults are always written, so an
+evolved or corrupt payload surfaces as an error instead of being silently dropped and every encoded
+document requires its `schemaVersion`. Schema-v1 field and block-kind names are pinned explicitly,
+and a golden JSON test guards the exact wire contract against accidental refactors. There is no
+unknown-schema fallback -- malformed JSON
+surfaces as a serialization error, and an unsupported schema version surfaces as an
+`IllegalArgumentException` naming the rejected and supported versions.
+
+`ScriptDocument.toScript()` derives the follower `Script` from the blocks in presentation order,
+joining them with a single space. Heading text is included because headings are read aloud by
+default in this milestone. Derived token indexes are computed on demand and are deliberately never
+stored on the document. The tracer, Android, and web paths all start their session from
+`startPromptSession(document.toScript())`, sharing this one seam.
+
+**This is the in-memory model and its plain-text/JSON conversions only.** Persistence, files,
+IndexedDB, Drive sync, and Markdown/DOCX/PDF import-export are explicitly *not* implemented yet;
+they arrive with their own storage and sync milestones.
 
 ## Toolchain
 
 Versions come from the official Kotlin/KMP-App-Template baseline (commit `63ff248c`): Kotlin
 2.3.21, Compose Multiplatform 1.11.0, AGP 9.0.1, Gradle 9.3.1, compile/target SDK 36, minSdk 26.
+The canonical document format uses `kotlinx-serialization-json` **1.11.0** (the latest stable
+release, built against the Kotlin 2.3.x line per its published tooling metadata); the serialization
+compiler plugin ships with Kotlin, so it is pinned to the Kotlin version in the version catalog.
 Requires JDK 17 and an Android SDK; set its location in `local.properties`:
 
 ```
