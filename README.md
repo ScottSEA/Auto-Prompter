@@ -9,21 +9,26 @@ Compose screen that runs unchanged on Android and in the browser.
 
 ## Modules
 
-| Module        | Type                              | Responsibility |
-|---------------|-----------------------------------|----------------|
-| `:core`       | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain, the canonical serializable `ScriptDocument` format, the pure document-editor reducer, the public `ScriptFollower` follow interface, and the pure `reducePromptSession` session state machine. |
-| `:ui`         | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen with a diagnostic document-editor section. Dispatches all intent through `:core`'s reducers; holds no alignment, mode, or editing logic of its own. |
-| `:androidApp` | Android application                | Android launcher (`MainActivity`) hosting the shared screen. |
-| `:webApp`     | Kotlin/Wasm Compose executable     | Browser composition root serving the shared screen. |
+| Module               | Type                              | Responsibility |
+|----------------------|-----------------------------------|----------------|
+| `:core`              | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain, the canonical serializable `ScriptDocument` format, the pure document-editor reducer, the public `ScriptFollower` follow interface, the pure `reducePromptSession` session state machine, the `DocumentStore` seam, and its `InMemoryDocumentStore` reference adapter. Depends on no adapter. |
+| `:storeContractTest` | KMP test-support library (jvm, android, wasmJs) | Owns the nine reusable `DocumentStore` contract behaviors as ordinary functions so every adapter runs the exact same assertions. Test-only support; nothing production depends on it. |
+| `:roomStore`         | KMP library (jvm, androidLibrary) | Durable Room 3 / SQLite `RoomDocumentStore` adapter for the `DocumentStore` seam, plus its `jvm()` / Android factory functions. Depends inward on `:core`; keeps Room/KSP codegen out of `:core` and `:ui`. |
+| `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen with a diagnostic document-editor section. Dispatches all intent through `:core`'s reducers and takes an injected `DocumentStore`; holds no alignment, mode, editing, or store-construction logic of its own. |
+| `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store and hosts the shared screen. |
+| `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that builds the in-memory store and serves the shared screen. |
 
-Adapters (`:androidApp`, `:webApp`) depend inward on `:ui` -> `:core`; nothing depends outward.
+Adapters (`:androidApp`, `:webApp`) depend inward on `:ui` -> `:core`; `:androidApp` also
+depends on `:roomStore` -> `:core`. `:roomStore` depends only on `:core`; `:core` never depends
+outward on Room. `:storeContractTest` is consumed only by adapter test source sets.
 
 ### Why this shape
 
-The four-module `:core` / `:ui` / `:androidApp` / `:webApp` split is the preferred shape and it
-builds cleanly under the current toolchain, so no deeper collapse was needed. `:core` adds a
-`jvm()` target purely so the shared domain tests run fast off-device (`:core:jvmTest`); the shipped
-targets are `androidLibrary` and `wasmJs`.
+The initial `:core` / `:ui` / launcher split remains intact. Two modules were added only where a
+real seam justified them: `:roomStore` isolates Room/KSP/native SQLite, while
+`:storeContractTest` lets every adapter reuse one behavioral contract without shipping test code
+inside production core. `:core` adds a `jvm()` target purely so shared domain tests run fast
+off-device (`:core:jvmTest`); its shipped targets are `androidLibrary` and `wasmJs`.
 
 ## What the follow engine does today
 
@@ -177,10 +182,12 @@ the editor draft untouched.
 ## The shared document store
 
 The persistence seam is an asynchronous, optimistic-concurrency `DocumentStore`
-(`com.scottsea.autoprompter.core.document.store`) that later slices will implement over Room
-(Android) and IndexedDB (web). This slice ships the interface, a reusable contract test suite, and
-one **in-memory reference adapter** that proves the semantics those production adapters must
-satisfy. **The reference adapter is not persistence: it holds everything in process memory and
+(`com.scottsea.autoprompter.core.document.store`). Android now implements it durably over **Room /
+SQLite** (see [The durable Room store](#the-durable-room-store)); the **web** adapter (over
+IndexedDB / OPFS) is still a later slice. `:core` ships the interface, the reusable contract test
+suite (now in `:storeContractTest`), and one **in-memory reference adapter** that proves the
+semantics those production adapters must satisfy and still backs web and every off-device test.
+**The reference adapter is not persistence: it holds everything in process memory and
 loses all documents when the process ends -- there is no restart persistence yet.**
 
 Concurrency is optimistic and explicit, never nullable magic. Each document ID carries a
@@ -206,11 +213,13 @@ global singleton**: a single `Mutex` serializes every suspend operation, it keep
 the last generation per ID (so tombstones survive delete), `list()` returns a fresh immutable list
 of live summaries ordered deterministically by title then ID, and a failed precondition mutates and
 increments nothing. There is no silent fallback or broad catch. 9 contract behaviors run against it
-through `DocumentStoreContract` (a functional runner, not an inheritance framework, so Room and
-IndexedDB adapters can reuse it): never-created reads, first create at gen 1, `MustBeMissing`
-conflict on a live doc, `Matches` update vs stale-conflict, delete + tombstone vs stale/missing
-delete, ABA-protected recreate, independent per-ID sequences with deterministic ordering, defensive
-aliasing, and a concurrent same-precondition race where exactly one save wins and one conflicts.
+through the reusable functional contract in the **`:storeContractTest`** module (a functional
+runner, not an inheritance framework, so the Room adapter -- and a future IndexedDB adapter --
+reuse the exact same assertions without duplicating them): never-created reads, first create at
+gen 1, `MustBeMissing` conflict on a live doc, `Matches` update vs stale-conflict, delete +
+tombstone vs stale/missing delete, ABA-protected recreate, independent per-ID sequences with
+deterministic ordering, defensive aliasing, and a concurrent same-precondition race where exactly
+one save wins and one conflicts.
 
 ## The document-library reducer
 
@@ -232,9 +241,80 @@ scenario changes and newer edits are therefore not overwritten by delayed result
 preserve any library selection made after the save started, and loads are applied only while the
 editor session, generation, requested selected document, and requested stored generation still match.
 
-**Non-goals in this slice:** no persistence, autosave, undo/redo history, rich text, or the eventual
-DOM editor island -- and no schema v2. The pinned schema-v1 wire contract and `ScriptDocument`'s
-immutable-block guarantee are unchanged. The Room and IndexedDB store adapters remain next slices.
+**Non-goals in this slice:** no autosave, undo/redo history, rich text, the eventual
+DOM editor island, or schema v2. The pinned schema-v1 wire contract and `ScriptDocument`'s
+immutable-block guarantee are unchanged. The **web** durable adapter (Room's WebWorker/OPFS
+driver over the same seam) remains a next slice.
+
+## The durable Room store
+
+`:roomStore` ships `RoomDocumentStore` -- the first real durable adapter for the `DocumentStore`
+seam, backed by **Room 3** over **SQLite**. It satisfies the nine-behavior contract exactly (run
+against real temporary on-disk SQLite databases on the JVM, one fresh database per behavior) and
+adds durability, so Android now survives process restart. **Web still gets the in-memory reference
+store and is process-only** -- there is no web persistence yet.
+
+**Versions (official, verified 2026-07-24):** Room `androidx.room3:room3-runtime` / `room3-compiler`
+**3.0.0** (the first stable Room 3 line, released 2026-07-01; the new `androidx.room3` namespace is
+KSP-only, coroutines-first, and requires an explicit `SQLiteDriver` --
+<https://developer.android.com/jetpack/androidx/releases/room3>). SQLite `androidx.sqlite:sqlite-bundled`
+**2.7.0**, using `BundledSQLiteDriver` for consistent behavior across JVM host and Android. KSP
+`com.google.devtools.ksp` **2.3.10** (KSP2), the published plugin build for Kotlin 2.3.21, proven by
+the codegen compiling on both the `jvm` and `android` targets. The Room schema is exported by the
+`androidx.room3` Gradle plugin **3.0.0**.
+
+**Schema / table strategy.** One table, `document_rows`, holds **one row per `DocumentId`** and
+retains both live state and tombstones so generations stay monotonic across delete/recreate. Columns:
+`id` (`TEXT` primary key), `generation` (`INTEGER`), `deleted` (`INTEGER` tombstone flag), `title`
+(`TEXT`, non-null for a live row, null for a tombstone), and `payload` (`TEXT`, the canonical
+**schema-v1 JSON** `ScriptDocument`, non-null for a live row, null for a tombstone). Document blocks
+are deliberately **not** normalized into child tables in this slice: the canonical JSON is the durable
+payload seam, so the document schema and its migrations are owned once by `kotlinx-serialization` and
+not duplicated in SQL. Row mapping is strict -- a live row must have a non-null payload and title, and
+its generation must be positive, its decoded `ScriptDocument.id` and title must match the row
+columns, and a tombstone must retain neither title nor payload. Malformed/unsupported payloads and
+any other inconsistent row surface an explicit `CorruptDocumentRowException` before reads or
+mutations rather than disappearing, defaulting, or being overwritten.
+
+**Transaction / generation mapping.** Every `save` and `delete` runs its compare-and-set inside a
+single Room `withWriteTransaction`, so the precondition check and the row write are atomic; Room
+serializes writers on the one bundled connection, which makes the concurrent same-precondition race
+deterministic (one `Saved`, one `Conflict`). A live save upserts `(deleted=false, title, payload)`;
+a delete upserts a tombstone `(deleted=true, title=null, payload=null)` at the next generation rather
+than deleting the row, preserving generation history. `generation` is monotonic exactly like the
+in-memory store: first mutation is gen 1, each later mutation `+1`. Overflow is **guarded before
+mutating** -- a mutation at `Long.MAX_VALUE` throws and the transaction rolls back, leaving the row
+untouched. Expected optimistic conflicts return the current `DocumentState.Live`/`.Missing` as data
+and never throw; only genuinely invalid/corrupt database state throws.
+
+**Schema location & migration rule.** The exported schema is checked into version control at
+`roomStore/schemas/com.scottsea.autoprompter.roomstore.DocumentDatabase/1.json` (version 1). This
+directory is **not** gitignored: the JSON is the source-of-truth history that a future schema bump
+diffs against. Any change to the Room entities must bump `DocumentDatabase`'s version and check in the
+new exported JSON alongside a migration; the current slice is v1 only, with no migrations.
+
+**Contract reuse.** `:roomStore`'s JVM tests call the same nine functions from `:storeContractTest`
+that `:core` uses for the in-memory adapter -- no behavior is re-specified. On top of them the module
+adds Room-specific durability tests (close/reopen the same file preserves the live document and its
+generation; reopen preserves a tombstone and recreate advances past it), corruption tests (null or
+malformed payload, null/mismatched title, payload-id/row-id mismatch, invalid tombstone data, and
+generation zero each throw explicitly, exercised through a test-only raw-row seeding seam that does
+not weaken the public API), and generation-overflow tests
+(save and delete at `Long.MAX_VALUE` throw without altering the row). `RoomDocumentStore` owns its
+database and exposes an explicit `close()` (`AutoCloseable`); the database and DAO never leak through
+the `DocumentStore` interface. The module currently has 21 JVM tests: the 9 shared contract
+behaviors plus smoke, durability, corruption, and generation-overflow coverage.
+
+**Android durability & lifecycle.** `MainActivity` builds one Room-backed store from the
+**application** context (`createRoomDocumentStore(applicationContext)`), injects it into `TracerApp`,
+and closes it after `ComponentActivity.onDestroy()` has disposed Compose and canceled its UI
+coroutines. The store is Activity-owned and reopened after a configuration change, which is safe
+because the SQLite file is the durable source of truth and Room's compare-and-set is atomic; an
+Application-scoped owner was not needed for this slice.
+
+**Web is still process-only.** `webApp`'s `main` builds a single `InMemoryDocumentStore` for the
+page's lifetime and injects it into `TracerApp`. This is not persistence -- reloading the page loses
+all documents -- and is called out in code and here to avoid any claim of web durability.
 
 ## Toolchain
 
@@ -264,6 +344,10 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 ```bash
 # Shared core and UI-model behavior tests (fast, off-device)
 ./gradlew :core:jvmTest :ui:jvmTest
+
+# Durable Room store: 9 reused contract behaviors on real temp SQLite DBs,
+# plus reopen/corruption/overflow tests (off-device, JVM)
+./gradlew :roomStore:jvmTest
 
 # Android debug APK -> androidApp/build/outputs/apk/debug/
 ./gradlew :androidApp:assembleDebug

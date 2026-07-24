@@ -43,33 +43,28 @@ import com.scottsea.autoprompter.core.document.library.DocumentLibraryState
 import com.scottsea.autoprompter.core.document.store.DocumentState
 import com.scottsea.autoprompter.core.document.store.DocumentStore
 import com.scottsea.autoprompter.core.document.store.DocumentSummary
-import com.scottsea.autoprompter.core.document.store.InMemoryDocumentStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** Platform composition roots call this single shared entry point. */
+/** Platform composition roots own a [DocumentStore] and inject it into this single shared entry point. */
 @Composable
-fun TracerApp() {
+fun TracerApp(store: DocumentStore) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
-            TracerScreen()
+            TracerScreen(store)
         }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun TracerScreen() {
+fun TracerScreen(store: DocumentStore) {
     var model by remember { mutableStateOf(initialTracerModel()) }
     val updateModel: ((TracerModel) -> TracerModel) -> Unit = { transform ->
         model = transform(model)
     }
 
-    // One process-only reference store for the whole diagnostic session. This is NOT persistence:
-    // everything it holds is lost when the process ends. Production Room/IndexedDB adapters arrive
-    // in later slices behind the same DocumentStore seam.
-    val store: DocumentStore = remember { InMemoryDocumentStore() }
     val scope = rememberCoroutineScope()
 
     // Prime the library from the store's current live listing on first composition.

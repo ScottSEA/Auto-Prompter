@@ -1,10 +1,18 @@
-package com.scottsea.autoprompter.core.document.store
+package com.scottsea.autoprompter.store.contract
 
 import com.scottsea.autoprompter.core.document.BlockId
 import com.scottsea.autoprompter.core.document.DocumentId
 import com.scottsea.autoprompter.core.document.ScriptBlock
 import com.scottsea.autoprompter.core.document.ScriptBlockKind
 import com.scottsea.autoprompter.core.document.ScriptDocument
+import com.scottsea.autoprompter.core.document.store.DocumentState
+import com.scottsea.autoprompter.core.document.store.DocumentStore
+import com.scottsea.autoprompter.core.document.store.DocumentSummary
+import com.scottsea.autoprompter.core.document.store.DeleteOutcome
+import com.scottsea.autoprompter.core.document.store.SavePrecondition
+import com.scottsea.autoprompter.core.document.store.SaveOutcome
+import com.scottsea.autoprompter.core.document.store.StoreGeneration
+import com.scottsea.autoprompter.core.document.store.StoredDocument
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlin.test.assertEquals
@@ -16,11 +24,12 @@ import kotlin.test.assertTrue
  *
  * These are free suspend functions (a functional contract runner), not an inheritance-heavy base
  * test class. Each function is one RED->GREEN behavior and takes a *factory* so it can build as many
- * fresh, isolated stores as it needs. When Room and IndexedDB adapters arrive they reuse this exact
- * suite by passing their own factory -- no framework subclassing required.
+ * fresh, isolated stores as it needs. The InMemory reference adapter (in :core) and the Room adapter
+ * (in :roomStore) reuse this exact suite by passing their own factory -- no framework subclassing
+ * and no duplicated behaviors.
  *
- * The concrete [InMemoryDocumentStoreTest] wraps each of these in a platform `@Test` inside
- * `runTest`, which keeps per-behavior test counts while sharing all the assertions here.
+ * This lives in a dedicated test-support module's *main* source set so it is consumable across
+ * modules while never being published inside production :core's own test code.
  */
 
 /** Builds a fresh, empty store for one behavior. */

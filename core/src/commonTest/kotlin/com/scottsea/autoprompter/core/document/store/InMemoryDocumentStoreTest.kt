@@ -1,5 +1,15 @@
 package com.scottsea.autoprompter.core.document.store
 
+import com.scottsea.autoprompter.store.contract.DocumentStoreFactory
+import com.scottsea.autoprompter.store.contract.contractConcurrentSamePreconditionSaves
+import com.scottsea.autoprompter.store.contract.contractDefensiveAliasing
+import com.scottsea.autoprompter.store.contract.contractDeleteTombstonesAndStaleConflicts
+import com.scottsea.autoprompter.store.contract.contractIndependentIdsAndDeterministicOrder
+import com.scottsea.autoprompter.store.contract.contractMatchesUpdatesAndStaleConflicts
+import com.scottsea.autoprompter.store.contract.contractMustBeMissingAgainstLiveConflicts
+import com.scottsea.autoprompter.store.contract.contractMustBeMissingCreatesGenerationOne
+import com.scottsea.autoprompter.store.contract.contractNeverCreatedIsMissing
+import com.scottsea.autoprompter.store.contract.contractRecreateAfterDeleteIsAbaSafe
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 

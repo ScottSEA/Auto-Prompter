@@ -33,6 +33,8 @@ plugins {
 }
 
 include(":core")
+include(":storeContractTest")
+include(":roomStore")
 include(":ui")
 include(":androidApp")
 include(":webApp")

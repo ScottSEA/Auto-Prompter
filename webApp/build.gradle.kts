@@ -18,6 +18,7 @@ kotlin {
 
     sourceSets {
         wasmJsMain.dependencies {
+            implementation(projects.core)
             implementation(projects.ui)
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
