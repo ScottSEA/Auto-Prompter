@@ -17,8 +17,6 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
-private const val MODEL_DIRECTORY = "speech-models"
-
 /** Android's local sherpa-onnx runtime. A verified model is required before this is constructed. */
 class AndroidLiveSpeechRuntime internal constructor(
     private val model: InstalledSpeechModel,
@@ -106,7 +104,7 @@ fun createAndroidLiveSpeechRuntime(
     context: Context,
     pack: SpeechModelPack = ENGLISH_ZIPFORMER_20M,
 ): LiveSpeechRuntime {
-    val root = File(File(context.filesDir, MODEL_DIRECTORY), pack.id)
+    val root = File(File(context.filesDir, SPEECH_MODEL_DIRECTORY), pack.id)
     return when (val state = inspectInstalledSpeechModel(root, pack)) {
         is InstalledSpeechModelState.Ready -> AndroidLiveSpeechRuntime(state.model)
         is InstalledSpeechModelState.Unavailable ->

@@ -16,9 +16,9 @@ Compose screen that runs unchanged on Android and in the browser.
 | `:roomStore`         | KMP library (jvm, androidLibrary) | Durable Room 3 / SQLite `RoomDocumentStore` adapter for the `DocumentStore` seam, plus its `jvm()` / Android factory functions. Depends inward on `:core`; keeps Room/KSP codegen out of `:core` and `:ui`. |
 | `:webStore`          | KMP library (wasmJs) | Durable browser `IndexedDbDocumentStore` adapter for the `DocumentStore` seam over **IndexedDB** (via `com.juul.indexeddb`), plus its suspend `openIndexedDbDocumentStore(...)` factory. Depends inward on `:core`; keeps IndexedDB/JS interop out of `:core` and `:ui`. |
 | `:webSpeech`         | KMP library (wasmJs) | Capability-detected browser `LiveSpeechRuntime` adapter over the vendor **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`), plus its `browserLiveSpeechRuntime()` factory. Maps `onstart`/`onresult`/`onerror`/`onend` to the shared `SpeechEvent` stream behind an internal engine seam; no Web Speech types escape. Depends inward on `:core` only. |
-| `:androidMedia`      | Android library | Offline `LiveSpeechRuntime` adapter over one owned `AudioRecord` and sherpa-onnx streaming Zipformer, plus pinned model metadata and full-file verification. Depends inward on `:core`; keeps Android audio and sherpa/JNI types out of shared code. |
+| `:androidMedia`      | Android library | Offline `LiveSpeechRuntime` adapter over one owned `AudioRecord` and sherpa-onnx streaming Zipformer, plus pinned model metadata and resumable, checksum-verified, atomic provisioning. Depends inward on `:core`; keeps Android audio, networking, storage, and sherpa/JNI types out of shared code. |
 | `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen with a diagnostic document-editor section and a diagnostic live-speech card. Dispatches all intent through `:core`'s reducers and takes an injected `DocumentStore` and `LiveSpeechRuntime`; holds no alignment, mode, editing, store-construction, or speech-recognition logic of its own. |
-| `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, verifies the local speech model off-main, requests microphone permission only when that model is ready, injects either the offline runtime or an explicit unsupported runtime, and hosts the shared screen. |
+| `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, owns the process-wide model installer, injects either the offline runtime or an explicit unsupported runtime, bridges Start-time microphone permission, and hosts the shared screen. |
 | `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that opens the durable IndexedDB store, feature-detects and injects `browserLiveSpeechRuntime()`, and serves the shared screen. |
 
 Adapters (`:androidApp`, `:webApp`) depend inward on `:ui` -> `:core`; `:androidApp` also
@@ -81,7 +81,7 @@ manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 docu
 covering construction/validation, plain-text import, JSON round trip and error handling, and
 document-to-script conversion, 21 document-editor tests (see below), 9 `DocumentStore` contract
 tests, 16 document-library reducer tests (both see below), and 40 live-speech
-capability/identity/error/lifecycle/fold tests. 29 shared UI-model tests
+capability/identity/error/lifecycle/fold tests. 32 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
 expected document identity/title and starts prompting from the document's converted `Script`,
 the diagnostic editor flow (editing marks the draft dirty, applying a valid draft restarts
@@ -91,6 +91,7 @@ clean, a second save advances to generation 2, a stale save conflicts and leaves
 dirty with a typed store conflict, delete removes the entry, and loading a saved entry restarts
 the editor and prompt under a fresh session. Eight of those UI-model tests cover live lifecycle,
 partial/revised hypotheses, session restarts, manual hold, termination, and typed failures.
+Three more pin model-provisioning status text for missing, paused, and low-storage states.
 
 ## The canonical script document
 
@@ -496,10 +497,24 @@ records each HTTPS URL, exact size, and SHA-256. Before native code can load the
 ```
 
 Missing, truncated, or corrupt files keep the runtime explicitly unsupported and the microphone
-untouched. A verified pack enables a streaming/offline/microphone-owning capability; only then does
-`MainActivity` request `RECORD_AUDIO`. This tracer slice deliberately does **not** download or
-bundle the 45 MB model yet, so a normal checkout remains unsupported until those verified files are
-provisioned. Atomic/resumable provisioning with storage preflight is the next vertical slice.
+untouched. The shared diagnostic card exposes install, pause, resume, retry, progress, verification,
+and storage errors while leaving manual prompting usable. Provisioning is process-owned across
+Activity recreation and writes only to app-private storage:
+
+- A storage preflight requires the remaining model bytes plus a 16 MiB safety reserve.
+- Each immutable HTTPS file resumes with `Range`; if a server ignores the range, the full retry goes
+  to a temporary replacement so a failed retry cannot erase prior progress.
+- Cancellation disconnects blocked TLS/header or body I/O and joins that worker before releasing the
+  installer lock, so rotation cannot create concurrent staging writers.
+- Completed files are checked against pinned byte counts and SHA-256 values. Only a completely
+  verified staging directory is atomically promoted; the prior directory is restored if promotion
+  fails or recovery finds an interrupted move.
+
+The model is **not bundled in the APK**. The only model network traffic is a user-triggered download
+from the revision-pinned public Hugging Face source; scripts and recordings are never uploaded. A
+verified pack enables the streaming/offline/microphone-owning runtime. `RECORD_AUDIO` is requested
+only when the user presses *Start listening*, and denial remains a typed `NotAllowed` error that can
+be retried in the same Activity.
 
 Capture uses 16 kHz mono PCM16 in 20 ms chunks for this speech-only tracer. A dedicated single-thread
 dispatcher confines AudioRecord start/read/release and sherpa JNI use; endpoint results finalize an
@@ -508,10 +523,11 @@ result, and synchronous close waits for microphone/JNI teardown. When recording 
 runtime seam stays intact while capture moves to the architecture's single 48 kHz graph and feeds
 this recognizer through a tested resampler.
 
-Twenty-two off-device `:androidMedia:testDebugUnitTest` tests cover model metadata/verification,
+Thirty-four off-device `:androidMedia:testDebugUnitTest` tests cover model metadata/verification,
 partial and endpoint revision mapping, typed permission/audio/language errors, stop/close failures,
-synchronous cleanup, distinct sessions, and capability honesty without loading JNI or requesting a
-microphone. The Android APK compiles and lints against the real AAR; the two-ABI debug APK is about
+synchronous cleanup, distinct sessions, capability honesty, resume/range fallback, cancellation
+before and after response headers, storage preflight, corruption rejection, and promotion rollback
+without loading JNI or requesting a microphone. The Android APK compiles and lints against the real AAR; the two-ABI debug APK is about
 82 MB before model files. **No Android device is connected**, so real microphone recognition,
 latency, accuracy, thermal behavior, and OEM teardown behavior remain unverified and are not claimed
 production-ready.
@@ -571,8 +587,8 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 # real headless Chromium with no microphone (25 tests)
 ./gradlew :webSpeech:wasmJsBrowserTest
 
-# Android offline speech: model verification plus session/revision/error/resource lifecycle tests
-# with fake PCM/recognizer engines; no microphone or JNI is opened (22 tests)
+# Android offline speech + provisioning: model/session/resource tests, resumable transfer,
+# cancellation, storage, verification, and promotion rollback; no microphone or JNI is opened (34 tests)
 ./gradlew :androidMedia:testDebugUnitTest
 
 # Android debug APK -> androidApp/build/outputs/apk/debug/

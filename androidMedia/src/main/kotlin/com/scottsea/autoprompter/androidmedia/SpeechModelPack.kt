@@ -3,6 +3,7 @@ package com.scottsea.autoprompter.androidmedia
 private val SHA256_PATTERN = Regex("[0-9a-f]{64}")
 private val SAFE_FILE_NAME_PATTERN = Regex("[A-Za-z0-9._-]+")
 private val SAFE_PACK_ID_PATTERN = Regex("[A-Za-z0-9._-]+")
+internal const val SPEECH_MODEL_DIRECTORY = "speech-models"
 
 /** One immutable file in a downloadable speech model pack. */
 data class SpeechModelFile(

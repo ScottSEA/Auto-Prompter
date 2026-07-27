@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +54,9 @@ import com.scottsea.autoprompter.core.speech.SpeechError
 import com.scottsea.autoprompter.core.speech.SpeechEvent
 import com.scottsea.autoprompter.core.speech.SpeechSession
 import com.scottsea.autoprompter.core.speech.SpeechSessionPlan
+import com.scottsea.autoprompter.core.speech.SpeechModelProvisioner
+import com.scottsea.autoprompter.core.speech.SpeechProvisioningError
+import com.scottsea.autoprompter.core.speech.SpeechProvisioningState
 import com.scottsea.autoprompter.core.speech.speechErrorForFailure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
@@ -69,11 +73,19 @@ private const val LIVE_SPEECH_LANGUAGE = "en-US"
 fun TracerApp(
     store: DocumentStore,
     speech: LiveSpeechRuntime,
+    speechProvisioner: SpeechModelProvisioner? = null,
+    onSpeechPermissionRequest: (suspend () -> Boolean)? = null,
     onStoreFailure: (Throwable) -> Unit = { throw it },
 ) {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
-            TracerScreen(store, speech, onStoreFailure)
+            TracerScreen(
+                store,
+                speech,
+                speechProvisioner,
+                onSpeechPermissionRequest,
+                onStoreFailure,
+            )
         }
     }
 }
@@ -83,6 +95,8 @@ fun TracerApp(
 fun TracerScreen(
     store: DocumentStore,
     speech: LiveSpeechRuntime,
+    speechProvisioner: SpeechModelProvisioner?,
+    onSpeechPermissionRequest: (suspend () -> Boolean)?,
     onStoreFailure: (Throwable) -> Unit,
 ) {
     var model by remember { mutableStateOf(initialTracerModel()) }
@@ -184,6 +198,8 @@ fun TracerScreen(
             model = model,
             updateModel = updateModel,
             runtime = speech,
+            provisioner = speechProvisioner,
+            onPermissionRequest = onSpeechPermissionRequest,
             scope = scope,
         )
 
@@ -215,12 +231,16 @@ private fun LiveSpeechSection(
     model: TracerModel,
     updateModel: ((TracerModel) -> TracerModel) -> Unit,
     runtime: LiveSpeechRuntime,
+    provisioner: SpeechModelProvisioner?,
+    onPermissionRequest: (suspend () -> Boolean)?,
     scope: CoroutineScope,
 ) {
     val capability = runtime.capabilities
+    val provisioningState = provisioner?.state?.collectAsState()?.value
     var session by remember(runtime) { mutableStateOf<SpeechSession?>(null) }
     var collector by remember(runtime) { mutableStateOf<Job?>(null) }
     var starting by remember(runtime) { mutableStateOf(false) }
+    var installJob by remember(provisioner) { mutableStateOf<Job?>(null) }
     val listening =
         model.live.phase == LiveSpeechPhase.Starting || model.live.phase == LiveSpeechPhase.Listening
 
@@ -261,12 +281,40 @@ private fun LiveSpeechSection(
         }
     }
 
+    DisposableEffect(provisioner) {
+        onDispose {
+            installJob?.cancel()
+        }
+    }
+
     Card {
         Column(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text("Live speech runtime (real)", style = MaterialTheme.typography.labelLarge)
+            if (provisioner != null && provisioningState != null) {
+                SpeechProvisioningSection(
+                    state = provisioningState,
+                    installing = installJob?.isActive == true,
+                    onInstall = {
+                        if (installJob?.isActive != true) {
+                            installJob =
+                                scope.launch {
+                                    try {
+                                        provisioner.install()
+                                    } finally {
+                                        installJob = null
+                                    }
+                                }
+                        }
+                    },
+                    onPause = {
+                        installJob?.cancel()
+                        installJob = null
+                    },
+                )
+            }
             Text(capabilitySummary(capability), style = MaterialTheme.typography.bodySmall)
             if (!capability.supported) {
                 Text(
@@ -297,6 +345,15 @@ private fun LiveSpeechSection(
                         scope.launch(start = CoroutineStart.UNDISPATCHED) {
                             var opened: SpeechSession? = null
                             try {
+                                if (onPermissionRequest?.invoke() == false) {
+                                    updateModel { current ->
+                                        foldLiveSpeech(
+                                            current,
+                                            SpeechEvent.Failed(SpeechError.NotAllowed),
+                                        )
+                                    }
+                                    return@launch
+                                }
                                 opened = runtime.open(SpeechSessionPlan(LanguageTag(LIVE_SPEECH_LANGUAGE)))
                                 session = opened
                                 collector = launch(start = CoroutineStart.UNDISPATCHED) {
@@ -336,6 +393,74 @@ private fun LiveSpeechSection(
             }
         }
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SpeechProvisioningSection(
+    state: SpeechProvisioningState,
+    installing: Boolean,
+    onInstall: () -> Unit,
+    onPause: () -> Unit,
+) {
+    Text(provisioningStatus(state), style = MaterialTheme.typography.bodySmall)
+    if (state is SpeechProvisioningState.Downloading) {
+        LinearProgressIndicator(
+            progress = {
+                state.downloadedBytes.toFloat() / state.model.downloadBytes.toFloat()
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        when (state) {
+            is SpeechProvisioningState.Missing,
+            is SpeechProvisioningState.Paused,
+            is SpeechProvisioningState.Failed,
+            -> Button(onClick = onInstall, enabled = !installing) {
+                Text(if (state is SpeechProvisioningState.Failed) "Retry model install" else "Install offline model")
+            }
+            is SpeechProvisioningState.Downloading ->
+                OutlinedButton(onClick = onPause) { Text("Pause download") }
+            else -> Unit
+        }
+    }
+}
+
+internal fun provisioningStatus(state: SpeechProvisioningState): String =
+    when (state) {
+        is SpeechProvisioningState.Checking -> "Offline model: checking local files."
+        is SpeechProvisioningState.Missing ->
+            "Offline model: not installed (${byteLabel(state.model.downloadBytes)} download)."
+        is SpeechProvisioningState.Downloading ->
+            "Offline model: downloading ${state.currentFile} — " +
+                "${byteLabel(state.downloadedBytes)} / ${byteLabel(state.model.downloadBytes)}."
+        is SpeechProvisioningState.Verifying -> "Offline model: verifying checksums."
+        is SpeechProvisioningState.Ready -> "Offline model: installed and verified."
+        is SpeechProvisioningState.Paused ->
+            "Offline model: paused at ${byteLabel(state.stagedBytes)}; progress is preserved."
+        is SpeechProvisioningState.Failed ->
+            "Offline model: ${provisioningErrorLabel(state.error)}"
+    }
+
+private fun provisioningErrorLabel(error: SpeechProvisioningError): String =
+    when (error) {
+        is SpeechProvisioningError.InsufficientStorage ->
+            "needs ${byteLabel(error.requiredBytes)} free; ${byteLabel(error.availableBytes)} available."
+        is SpeechProvisioningError.Transfer ->
+            "download failed for ${error.fileName}: ${error.detail}"
+        is SpeechProvisioningError.Verification ->
+            "verification failed${error.fileName?.let { " for $it" } ?: ""}: ${error.detail}"
+        is SpeechProvisioningError.Promotion -> "install failed: ${error.detail}"
+        is SpeechProvisioningError.Storage -> "storage failed: ${error.detail}"
+    }
+
+private fun byteLabel(bytes: Long): String {
+    val mebibytes = bytes / (1024L * 1024L)
+    return if (mebibytes > 0L) "$mebibytes MiB" else "$bytes bytes"
 }
 
 /** A concise, honest one-line summary of what the injected runtime can do. */
