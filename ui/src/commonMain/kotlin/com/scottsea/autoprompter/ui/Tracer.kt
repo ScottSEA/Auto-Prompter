@@ -1,10 +1,13 @@
 package com.scottsea.autoprompter.ui
 
+import com.scottsea.autoprompter.core.FollowMode
 import com.scottsea.autoprompter.core.PromptSessionAction
 import com.scottsea.autoprompter.core.PromptSessionState
+import com.scottsea.autoprompter.core.PromptRemoteCommand
 import com.scottsea.autoprompter.core.hypothesisOf
 import com.scottsea.autoprompter.core.reducePromptSession
 import com.scottsea.autoprompter.core.startPromptSession
+import com.scottsea.autoprompter.core.toAction
 import com.scottsea.autoprompter.core.document.BlockId
 import com.scottsea.autoprompter.core.document.DocumentId
 import com.scottsea.autoprompter.core.document.ScriptBlock
@@ -94,12 +97,12 @@ private fun canonicalDocument(id: String, title: String, text: String): ScriptDo
         blocks = listOf(ScriptBlock(BlockId("$id-b0"), ScriptBlockKind.Paragraph, text)),
     )
 
-// The Continuation scenario exercises the plain-text import path end to end with deterministic,
+// The welcome scenario exercises the plain-text import path end to end with deterministic,
 // static block IDs so the UI proves import -> document -> script, not just a hand-built document.
 private val continuationDocument: ScriptDocument = importPlainText(
     id = DocumentId("tracer-continuation"),
-    title = "Continuation",
-    text = "Hello world this is a live tracer for the Auto Prompter follow engine",
+    title = "Welcome script",
+    text = "Hello world this is a live presentation for confident speakers looking toward the camera",
     blockId = { index -> BlockId("continuation-b$index") },
 )
 
@@ -111,8 +114,8 @@ private val SCENARIOS = listOf(
         steps = listOf(
             "hello world",
             "hello world this is",
-            "hello world this is a live tracer",
-            "hello world this is a live tracer for the auto prompter follow engine",
+            "hello world this is a live presentation",
+            "hello world this is a live presentation for confident speakers looking toward the camera",
         ),
     ),
     // A short ad-lib ("very") is spoken between script words but progress still reaches the fox.
@@ -139,6 +142,28 @@ private val SCENARIOS = listOf(
             "go now",
             "go now pause",
             "go now",
+        ),
+    ),
+    // A longer, chunked read exercises real viewport movement rather than only token progress.
+    TracerScenario(
+        document =
+            canonicalDocument(
+                "tracer-long-read",
+                "Long-form scroll",
+                "good morning and thank you for joining us today " +
+                    "we are building a calmer way to present prepared ideas " +
+                    "the prompt listens for your place and keeps the next thought within easy view " +
+                    "you can pause the automatic follow at any time use a keyboard or presentation remote " +
+                    "and return to speech following when you are ready " +
+                    "the goal is simple confident delivery without thinking about the scroll",
+            ),
+        steps = listOf(
+            "good morning and thank you for joining us today",
+            "we are building a calmer way to present prepared ideas",
+            "the prompt listens for your place and keeps the next thought within easy view",
+            "you can pause the automatic follow at any time use a keyboard or presentation remote",
+            "and return to speech following when you are ready",
+            "the goal is simple confident delivery without thinking about the scroll",
         ),
     ),
 )
@@ -228,6 +253,22 @@ fun nudgeBackward(model: TracerModel): TracerModel = dispatch(model, PromptSessi
 
 /** Toggles between following speech and holding at the current anchor. */
 fun toggleFollow(model: TracerModel): TracerModel = dispatch(model, PromptSessionAction.ToggleFollow)
+
+/** Enters manual hold without toggling an already-held session back into following. */
+fun holdPrompt(model: TracerModel): TracerModel =
+    if (model.session.mode == FollowMode.Following) {
+        dispatch(model, PromptSessionAction.ToggleFollow)
+    } else {
+        model
+    }
+
+/** Dispatches one platform-free keyboard or presentation-remote command. */
+fun applyRemoteCommand(model: TracerModel, command: PromptRemoteCommand): TracerModel =
+    if (command == PromptRemoteCommand.Restart) {
+        reset(model)
+    } else {
+        dispatch(model, command.toAction())
+    }
 
 /** Resets the current session and clears simulated recognizer progress. */
 fun reset(model: TracerModel): TracerModel =

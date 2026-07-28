@@ -2,10 +2,10 @@
 
 Android-first Compose Multiplatform teleprompter with a Kotlin/Wasm browser preview.
 
-**This repository is the architecture tracer bullet, not a finished product.** It exists to
+**This repository is an evolving product tracer, not a finished product.** It exists to
 prove the module layout and the "shared core owns alignment, platform adapters depend inward"
-design end to end: a minimal speech-follow engine in shared code, exercised by a diagnostic
-Compose screen that runs unchanged on Android and in the browser.
+design end to end: shared speech following drives a product-facing prompt workspace that runs
+unchanged on Android and in the browser, while optional developer scenarios exercise edge cases.
 
 ## Modules
 
@@ -17,7 +17,7 @@ Compose screen that runs unchanged on Android and in the browser.
 | `:webStore`          | KMP library (wasmJs) | Durable browser `IndexedDbDocumentStore` adapter for the `DocumentStore` seam over **IndexedDB** (via `com.juul.indexeddb`), plus its suspend `openIndexedDbDocumentStore(...)` factory. Depends inward on `:core`; keeps IndexedDB/JS interop out of `:core` and `:ui`. |
 | `:webSpeech`         | KMP library (wasmJs) | Capability-detected browser `LiveSpeechRuntime` adapter over the vendor **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`), plus its `browserLiveSpeechRuntime()` factory. Maps `onstart`/`onresult`/`onerror`/`onend` to the shared `SpeechEvent` stream behind an internal engine seam; no Web Speech types escape. Depends inward on `:core` only. |
 | `:androidMedia`      | Android library | Offline `LiveSpeechRuntime` adapter over one owned `AudioRecord` and sherpa-onnx streaming Zipformer, plus pinned model metadata and resumable, checksum-verified, atomic provisioning. Depends inward on `:core`; keeps Android audio, networking, storage, and sherpa/JNI types out of shared code. |
-| `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose tracer screen with a diagnostic document-editor section and a diagnostic live-speech card. Dispatches all intent through `:core`'s reducers and takes an injected `DocumentStore` and `LiveSpeechRuntime`; holds no alignment, mode, editing, store-construction, or speech-recognition logic of its own. |
+| `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose prompt workspace with a distance-readable viewport, product-facing speech/editor/library controls, and optional developer scenarios. Dispatches all intent through `:core` reducers and takes injected persistence/speech adapters; holds no alignment, storage-construction, or recognition logic of its own. |
 | `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, owns the process-wide model installer, injects either the offline runtime or an explicit unsupported runtime, bridges Start-time microphone permission, and hosts the shared screen. |
 | `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that opens the durable IndexedDB store, feature-detects and injects `browserLiveSpeechRuntime()`, and serves the shared screen. |
 
@@ -70,18 +70,18 @@ following), `SeekTo` (jump to an exact token position and hold), `ResumeFollowin
 / `NudgeBackward` (one-token presentation-remote steps that hold), `ToggleFollow`, and `Reset`.
 Following ignores speech while held, resume continues from the manually chosen anchor, nudges stay
 within `0..tokenCount`, and an out-of-range `SeekTo` fails fast with an informative
-`IllegalArgumentException` rather than silently clamping. The shared tracer screen drives every
+`IllegalArgumentException` rather than silently clamping. The shared prompt workspace drives every
 transition through this reducer and shows the current mode, so the UI cannot drift from the engine.
 
-The shared tracer screen exercises both layers through named scenarios (continuation, ad-lib
-insertion, skipped words, repeated phrase), and each scenario now originates from a canonical
-`ScriptDocument` (see below) rather than a raw string. 131 core behavior tests in `:core:jvmTest`
+Optional developer scenarios exercise both layers through continuation, ad-lib, skipped-word,
+repeated-phrase, and long-form cases. Each scenario originates from a canonical `ScriptDocument`
+(see below) rather than a raw string. 138 core behavior tests in `:core:jvmTest`
 pin these behaviors: 16 aligner tests plus the state bounds, 8 reducer tests covering following,
 manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 document tests
 covering construction/validation, plain-text import, JSON round trip and error handling, and
 document-to-script conversion, 21 document-editor tests (see below), 9 `DocumentStore` contract
 tests, 16 document-library reducer tests (both see below), and 40 live-speech
-capability/identity/error/lifecycle/fold tests. 32 shared UI-model tests
+capability/identity/error/lifecycle/fold tests. 43 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
 expected document identity/title and starts prompting from the document's converted `Script`,
 the diagnostic editor flow (editing marks the draft dirty, applying a valid draft restarts
@@ -92,6 +92,24 @@ dirty with a typed store conflict, delete removes the entry, and loading a saved
 the editor and prompt under a fresh session. Eight of those UI-model tests cover live lifecycle,
 partial/revised hypotheses, session restarts, manual hold, termination, and typed failures.
 Three more pin model-provisioning status text for missing, paused, and low-storage states.
+
+## Prompt viewport and hardware controls
+
+The product-default workspace renders the script on a near-black, 48sp distance-reading surface.
+The current token is emphasized, completed text remains readable but subdued, and committed speech
+progress drives a pure `promptScrollDecision` policy. The active line stays near 40% from the top,
+with a 10% dead band to prevent jitter. Top and bottom runway derive from the measured viewport and
+scaled line height, so the first and final lines can occupy the same reading horizon.
+
+Touch/wheel scrolling immediately enters `ManualHold` and relayout never re-snaps a held prompt.
+Arrow and Page keys map to previous/next, Space or Enter toggles follow, and Home restarts.
+Presentation-remote and keyboard adapters emit the same platform-free `PromptRemoteCommand`s;
+auto-repeat is consumed so a held key cannot repeatedly toggle or restart. Follow motion completes
+in 220 ms and becomes instant when the platform requests reduced motion.
+
+`PRODUCT.md` and `DESIGN.md` define the focused, calm, professional product direction and the
+"Quiet Stage" visual system. Developer scenario and simulated-transcript controls are hidden by
+default behind `showDeveloperTools`; production launch surfaces use plain product language.
 
 ## The canonical script document
 
@@ -532,16 +550,17 @@ without loading JNI or requesting a microphone. The Android APK compiles and lin
 latency, accuracy, thermal behavior, and OEM teardown behavior remain unverified and are not claimed
 production-ready.
 
-### Tracer wiring and the diagnostic card
+### Shared workspace wiring
 
 `TracerApp` / `TracerScreen` now receive a `LiveSpeechRuntime` alongside the `DocumentStore`. The
-diagnostic **live-speech card** shows the capability summary, *Start listening* / *Stop listening*
-buttons, the current lifecycle phase (or end reason / typed error), and the latest live transcript.
+**Speech following** section shows product-facing availability, *Start listening* / *Stop listening*
+buttons, current status, typed errors, and the latest transcript when present.
 *Start* enters an undispatched click-scoped coroutine so browser user activation reaches the
 synchronous adapter `start()` call; session events are collected in a composition-owned coroutine and folded
 with the pure `foldSpeechEvent` helper (never a stale snapshot). The session is closed on disposal,
-which aborts active recognition and releases the microphone with no leaked callbacks. Live hypotheses drive the same prompt reducer as before; the
-simulated *Advance* / *Revise* controls remain and stay clearly labelled as simulation.
+which aborts active recognition and releases the microphone with no leaked callbacks. Live
+hypotheses drive the same prompt reducer and viewport as manual controls. Simulated transcript
+controls are available only when `showDeveloperTools` is explicitly enabled.
 
 ## Toolchain
 

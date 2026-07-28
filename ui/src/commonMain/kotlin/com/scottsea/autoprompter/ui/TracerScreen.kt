@@ -1,5 +1,6 @@
 package com.scottsea.autoprompter.ui
 
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -27,15 +28,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import com.scottsea.autoprompter.core.FollowMode
-import com.scottsea.autoprompter.core.coveredText
+import com.scottsea.autoprompter.core.PromptRemoteCommand
 import com.scottsea.autoprompter.core.progressIn
-import com.scottsea.autoprompter.core.remainingText
 import com.scottsea.autoprompter.core.document.BlockId
 import com.scottsea.autoprompter.core.document.editor.EditorAction
 import com.scottsea.autoprompter.core.document.editor.EditorValidationIssue
@@ -75,15 +77,17 @@ fun TracerApp(
     speech: LiveSpeechRuntime,
     speechProvisioner: SpeechModelProvisioner? = null,
     onSpeechPermissionRequest: (suspend () -> Boolean)? = null,
+    showDeveloperTools: Boolean = false,
     onStoreFailure: (Throwable) -> Unit = { throw it },
 ) {
-    MaterialTheme {
+    AutoPrompterTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             TracerScreen(
                 store,
                 speech,
                 speechProvisioner,
                 onSpeechPermissionRequest,
+                showDeveloperTools,
                 onStoreFailure,
             )
         }
@@ -97,6 +101,7 @@ fun TracerScreen(
     speech: LiveSpeechRuntime,
     speechProvisioner: SpeechModelProvisioner?,
     onSpeechPermissionRequest: (suspend () -> Boolean)?,
+    showDeveloperTools: Boolean,
     onStoreFailure: (Throwable) -> Unit,
 ) {
     var model by remember { mutableStateOf(initialTracerModel()) }
@@ -105,6 +110,17 @@ fun TracerScreen(
     }
 
     val scope = rememberCoroutineScope()
+    val rootFocusRequester = remember { FocusRequester() }
+    var remoteKeyState by remember { mutableStateOf(RemoteKeyInputState()) }
+
+    LaunchedEffect(Unit) {
+        rootFocusRequester.requestFocus()
+    }
+
+    fun runRemoteCommand(command: PromptRemoteCommand) {
+        model = applyRemoteCommand(model, command)
+        rootFocusRequester.requestFocus()
+    }
 
     // Prime the library from the store's current live listing on first composition.
     LaunchedEffect(store) {
@@ -126,13 +142,24 @@ fun TracerScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .focusRequester(rootFocusRequester)
+            .onFocusChanged { state ->
+                if (!state.hasFocus) remoteKeyState = RemoteKeyInputState()
+            }
+            .onKeyEvent { event ->
+                val result = reduceRemoteKeyInput(remoteKeyState, event.key, event.type)
+                remoteKeyState = result.state
+                result.command?.let(::runRemoteCommand)
+                result.consumed
+            }
+            .focusable()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Auto-Prompter follow tracer", style = MaterialTheme.typography.headlineSmall)
+        Text("Auto-Prompter", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Architecture tracer bullet: shared core alignment rendered on Android and web.",
+            "A calm, speech-following prompt workspace.",
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
@@ -140,38 +167,28 @@ fun TracerScreen(
             style = MaterialTheme.typography.titleSmall,
         )
 
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            tracerScenarioNames().forEachIndexed { index, name ->
-                if (index == model.scenarioIndex) {
-                    Button(onClick = { model = selectScenario(model, index) }) { Text(name) }
-                } else {
-                    OutlinedButton(onClick = { model = selectScenario(model, index) }) { Text(name) }
+        if (showDeveloperTools) {
+            Text("Developer scenarios", style = MaterialTheme.typography.labelLarge)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                tracerScenarioNames().forEachIndexed { index, name ->
+                    if (index == model.scenarioIndex) {
+                        Button(onClick = { model = selectScenario(model, index) }) { Text(name) }
+                    } else {
+                        OutlinedButton(onClick = { model = selectScenario(model, index) }) { Text(name) }
+                    }
                 }
             }
         }
 
-        Card {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text("Script", style = MaterialTheme.typography.labelLarge)
-                Text(scriptWithProgress(model))
-            }
-        }
-
-        Card {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text("Simulated current hypothesis", style = MaterialTheme.typography.labelLarge)
-                Text(model.hypothesisText.ifEmpty { "(none)" })
-            }
-        }
+        PromptViewport(
+            session = model.session,
+            onUserScroll = {
+                updateModel(::holdPrompt)
+            },
+        )
 
         Text("Mode: $modeLabel", style = MaterialTheme.typography.titleSmall)
         Text("Followed position: $committed / $total tokens ($percent%)")
@@ -184,14 +201,62 @@ fun TracerScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Button(onClick = { model = advance(model) }) { Text("Advance") }
-            OutlinedButton(onClick = { model = revise(model) }) { Text("Revise shorter") }
-            OutlinedButton(onClick = { model = nudgeBackward(model) }) { Text("Nudge back") }
-            OutlinedButton(onClick = { model = nudgeForward(model) }) { Text("Nudge forward") }
-            OutlinedButton(onClick = { model = toggleFollow(model) }) {
-                Text(if (following) "Hold" else "Resume")
+            OutlinedButton(
+                onClick = {
+                    runRemoteCommand(PromptRemoteCommand.Previous)
+                },
+            ) { Text("Previous") }
+            OutlinedButton(
+                onClick = {
+                    runRemoteCommand(PromptRemoteCommand.Next)
+                },
+            ) { Text("Next") }
+            if (following) {
+                OutlinedButton(
+                    onClick = {
+                        runRemoteCommand(PromptRemoteCommand.ToggleFollow)
+                    },
+                ) {
+                    Text("Hold position")
+                }
+            } else {
+                Button(
+                    onClick = {
+                        runRemoteCommand(PromptRemoteCommand.ToggleFollow)
+                    },
+                ) {
+                    Text("Resume following")
+                }
             }
-            OutlinedButton(onClick = { model = reset(model) }) { Text("Reset") }
+            OutlinedButton(
+                onClick = {
+                    runRemoteCommand(PromptRemoteCommand.Restart)
+                },
+            ) { Text("Restart") }
+        }
+
+        if (showDeveloperTools) {
+            Card {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Speech-follow diagnostics", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        "Simulated transcript: ${model.hypothesisText.ifEmpty { "(none)" }}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Button(onClick = { model = advance(model) }) { Text("Advance transcript") }
+                        OutlinedButton(onClick = { model = revise(model) }) {
+                            Text("Revise partial shorter")
+                        }
+                    }
+                }
+            }
         }
 
         LiveSpeechSection(
@@ -200,6 +265,7 @@ fun TracerScreen(
             runtime = speech,
             provisioner = speechProvisioner,
             onPermissionRequest = onSpeechPermissionRequest,
+            showDeveloperTools = showDeveloperTools,
             scope = scope,
         )
 
@@ -214,15 +280,15 @@ fun TracerScreen(
 }
 
 /**
- * A clearly labelled diagnostic card over the injected real [LiveSpeechRuntime].
+ * Product-facing controls over the injected real [LiveSpeechRuntime].
  *
  * This is the only place the tracer touches a *real* recognizer. It renders the runtime's honest
- * [SpeechCapability], disables Start with the reason when unsupported, and otherwise opens a
+ * [SpeechCapability], disables Start when unsupported, and otherwise opens a
  * [SpeechSession] and starts it undispatched inside the button callback so a browser can retain the
  * user gesture. Session events are collected in a composition-owned coroutine and folded into the
  * latest model via the pure [foldLiveSpeech]; hypotheses therefore drive the same prompt follower as
- * the simulated Advance/Revise controls above, while lifecycle/error events only update the
- * diagnostic state shown here. The session is stopped/closed on disposal and when it ends, so no
+ * the same reducer as manual controls, while lifecycle/error events update the status shown here.
+ * The session is stopped/closed on disposal and when it ends, so no
  * callbacks leak past the composition.
  */
 @OptIn(ExperimentalLayoutApi::class)
@@ -233,6 +299,7 @@ private fun LiveSpeechSection(
     runtime: LiveSpeechRuntime,
     provisioner: SpeechModelProvisioner?,
     onPermissionRequest: (suspend () -> Boolean)?,
+    showDeveloperTools: Boolean,
     scope: CoroutineScope,
 ) {
     val capability = runtime.capabilities
@@ -292,7 +359,7 @@ private fun LiveSpeechSection(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text("Live speech runtime (real)", style = MaterialTheme.typography.labelLarge)
+            Text("Speech following", style = MaterialTheme.typography.labelLarge)
             if (provisioner != null && provisioningState != null) {
                 SpeechProvisioningSection(
                     state = provisioningState,
@@ -318,18 +385,24 @@ private fun LiveSpeechSection(
             Text(capabilitySummary(capability), style = MaterialTheme.typography.bodySmall)
             if (!capability.supported) {
                 Text(
-                    "Unsupported: ${capability.unsupportedReason}",
+                    if (showDeveloperTools) {
+                        "Unavailable: ${capability.unsupportedReason}"
+                    } else {
+                        "Speech following is not available on this device or browser."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            Text("Phase: ${phaseLabel(model.live.phase)}", style = MaterialTheme.typography.titleSmall)
+            Text("Status: ${phaseLabel(model.live.phase)}", style = MaterialTheme.typography.titleSmall)
             model.live.endReason?.let {
                 Text("End: ${endReasonLabel(it)}", style = MaterialTheme.typography.bodySmall)
             }
             model.live.lastError?.let {
                 Text("Error: ${speechErrorLabel(it)}", style = MaterialTheme.typography.bodySmall)
             }
-            Text("Latest live transcript: ${model.live.latestTranscript.ifEmpty { "(none)" }}")
+            if (model.live.latestTranscript.isNotEmpty()) {
+                Text("Heard: ${model.live.latestTranscript}")
+            }
 
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -465,14 +538,12 @@ private fun byteLabel(bytes: Long): String {
 
 /** A concise, honest one-line summary of what the injected runtime can do. */
 private fun capabilitySummary(capability: SpeechCapability): String {
-    if (!capability.supported) return "Not supported in this build."
-    val traits = buildList {
-        add(if (capability.streaming) "interim results" else "final only")
-        if (capability.continuous) add("continuous")
-        add(if (capability.offlineGuaranteed) "offline guaranteed" else "online / vendor-dependent")
-        if (capability.ownsMicrophone) add("owns microphone")
+    if (!capability.supported) return "Speech following is unavailable."
+    return if (capability.offlineGuaranteed) {
+        "Speech stays on this device."
+    } else {
+        "Speech availability and privacy depend on your browser provider."
     }
-    return "Supported: " + traits.joinToString(", ") + "."
 }
 
 private fun phaseLabel(phase: LiveSpeechPhase): String =
@@ -535,11 +606,7 @@ private fun DiagnosticEditorSection(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Diagnostic document editor", style = MaterialTheme.typography.labelLarge)
-            Text(
-                "Shared Compose diagnostic only; the production web editor stays a DOM island.",
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Text("Script editor", style = MaterialTheme.typography.labelLarge)
 
             OutlinedTextField(
                 value = editor.title,
@@ -654,9 +721,9 @@ private fun DiagnosticLibrarySection(
     val library: DocumentLibraryState = model.library
     val selected: DocumentSummary? = selectedLibraryEntry(model)
 
-    Text("Reference library (durable store)", style = MaterialTheme.typography.titleSmall)
+    Text("Script library", style = MaterialTheme.typography.titleSmall)
     Text(
-        "Saved documents persist in the app's durable store and survive restart and reload.",
+        "Saved scripts remain available after restart or reload.",
         style = MaterialTheme.typography.bodySmall,
     )
 
@@ -671,7 +738,7 @@ private fun DiagnosticLibrarySection(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
-                    "$marker${summary.title} — gen ${summary.generation.value} (${summary.id.value})",
+                    "$marker${summary.title}",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 OutlinedButton(
@@ -714,7 +781,7 @@ private fun DiagnosticLibrarySection(
 
     val conflict = library.conflict
     if (conflict != null) {
-        Text("Store conflict: ${describeConflict(conflict)}", style = MaterialTheme.typography.bodySmall)
+        Text("Save conflict: ${describeConflict(conflict)}", style = MaterialTheme.typography.bodySmall)
     }
 
     FlowRow(
@@ -757,14 +824,12 @@ private fun CoroutineScope.launchStoreOperation(
 /** A concise, human-readable label for a typed store conflict state, for the diagnostic display. */
 private fun describeConflict(state: DocumentState): String =
     when (state) {
-        is DocumentState.Live ->
-            "live gen ${state.snapshot.generation.value} (${state.snapshot.document.id.value})"
+        is DocumentState.Live -> "a newer saved version is available"
         is DocumentState.Missing -> {
-            val last = state.lastGeneration
-            if (last == null) {
-                "missing, never created (${state.id.value})"
+            if (state.lastGeneration == null) {
+                "this script has not been saved yet"
             } else {
-                "missing, tombstone gen ${last.value} (${state.id.value})"
+                "this script was deleted by another operation"
             }
         }
     }
@@ -772,7 +837,7 @@ private fun describeConflict(state: DocumentState): String =
 /** Appends a deterministic paragraph block whose id is derived from the current edit generation. */
 private fun appendDiagnosticBlock(model: TracerModel): TracerModel {
     val id = BlockId("diagnostic-${model.editor.editGeneration}")
-    val draft = paragraphDraft(id, "Diagnostic paragraph ${model.editor.editGeneration}")
+    val draft = paragraphDraft(id, "New paragraph")
     return editTracer(model, EditorAction.InsertBlock(model.editor.blocks.size, draft))
 }
 
@@ -781,18 +846,5 @@ private fun describeIssue(issue: EditorValidationIssue): String =
     when (issue) {
         is EditorValidationIssue.BlankTitle -> "blank title"
         is EditorValidationIssue.NoBlocks -> "no blocks"
-        is EditorValidationIssue.BlankBlockText -> "blank block ${issue.id.value}"
+        is EditorValidationIssue.BlankBlockText -> "blank paragraph"
     }
-
-/** Renders the script with the followed (spoken) prefix emphasized. */
-private fun scriptWithProgress(model: TracerModel) = buildAnnotatedString {
-    val covered = model.session.script.coveredText(model.session.follow)
-    val remaining = model.session.script.remainingText(model.session.follow)
-    if (covered.isNotEmpty()) {
-        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(covered) }
-    }
-    if (remaining.isNotEmpty()) {
-        if (covered.isNotEmpty()) append(" ")
-        append(remaining)
-    }
-}

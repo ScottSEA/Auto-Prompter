@@ -6,6 +6,7 @@ import com.scottsea.autoprompter.core.document.ScriptBlockKind
 import com.scottsea.autoprompter.core.document.toScript
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class TracerDocumentTest {
 
@@ -19,7 +20,7 @@ class TracerDocumentTest {
         val model = scenario(0)
 
         assertEquals(DocumentId("tracer-continuation"), model.document.id)
-        assertEquals("Continuation", model.document.title)
+        assertEquals("Welcome script", model.document.title)
         // Plain-text import yields a single ordered Paragraph block.
         assertEquals(1, model.document.blocks.size)
         assertEquals(ScriptBlockKind.Paragraph, model.document.blocks.first().kind)
@@ -41,5 +42,14 @@ class TracerDocumentTest {
         val titles = (0 until tracerScenarioNames().size).map { scenario(it).document.title }
         assertEquals(tracerScenarioNames(), titles)
         assertEquals(titles.toSet().size, titles.size)
+    }
+
+    @Test
+    fun longFormScenarioIsLargeEnoughToExerciseViewportScrolling() {
+        val index = tracerScenarioNames().indexOf("Long-form scroll")
+        val model = scenario(index)
+
+        assertTrue(model.session.script.tokenCount >= 60)
+        assertTrue(model.steps.size >= 5)
     }
 }

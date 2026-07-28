@@ -68,7 +68,7 @@ class TracerLiveSpeechTest {
         var model = base()
         model = foldLiveSpeech(
             model,
-            hypothesis(utterance = 0, revision = 0, text = "hello world this is a live tracer"),
+            hypothesis(utterance = 0, revision = 0, text = "hello world this is a live presentation"),
         )
         val peak = model.session.follow.committedTokens
         assertEquals(7, peak)
@@ -113,10 +113,10 @@ class TracerLiveSpeechTest {
         // A different utterance restarts revision numbering at 0 and is always accepted.
         model = foldLiveSpeech(
             model,
-            hypothesis(utterance = 1, revision = 0, text = "hello world this is a live tracer"),
+            hypothesis(utterance = 1, revision = 0, text = "hello world this is a live presentation"),
         )
         assertEquals(7, model.session.follow.committedTokens)
-        assertEquals("hello world this is a live tracer", model.live.latestTranscript)
+        assertEquals("hello world this is a live presentation", model.live.latestTranscript)
     }
 
     @Test
@@ -127,7 +127,7 @@ class TracerLiveSpeechTest {
 
         model = foldLiveSpeech(
             model,
-            hypothesis(utterance = 0, revision = 0, text = "hello world this is a live tracer"),
+            hypothesis(utterance = 0, revision = 0, text = "hello world this is a live presentation"),
         )
         assertEquals(0, model.session.follow.committedTokens)
 
@@ -136,7 +136,7 @@ class TracerLiveSpeechTest {
         assertEquals(FollowMode.Following, model.session.mode)
         model = foldLiveSpeech(
             model,
-            hypothesis(utterance = 1, revision = 0, text = "hello world this is a live tracer"),
+            hypothesis(utterance = 1, revision = 0, text = "hello world this is a live presentation"),
         )
         assertTrue(model.session.follow.committedTokens > 0)
     }
