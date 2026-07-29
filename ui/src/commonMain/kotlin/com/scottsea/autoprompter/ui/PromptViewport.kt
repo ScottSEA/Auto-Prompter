@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -40,22 +41,24 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.scottsea.autoprompter.core.FollowMode
 import com.scottsea.autoprompter.core.PromptScrollDecision
 import com.scottsea.autoprompter.core.PromptSessionState
 import com.scottsea.autoprompter.core.PromptViewportConfig
 import com.scottsea.autoprompter.core.Script
 import com.scottsea.autoprompter.core.promptScrollDecision
+import com.scottsea.autoprompter.core.settings.PromptPreferences
 import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
 
 private val PromptShape = RoundedCornerShape(20.dp)
-private val PromptViewportPolicy = PromptViewportConfig()
 
 /** The product's distance-readable prompt surface, driven by committed token progress. */
 @Composable
 internal fun PromptViewport(
     session: PromptSessionState,
+    preferences: PromptPreferences,
     onUserScroll: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -63,12 +66,21 @@ internal fun PromptViewport(
     val density = LocalDensity.current
     var layoutResult by remember(session.script) { mutableStateOf<TextLayoutResult?>(null) }
     var viewportHeightPx by remember { mutableIntStateOf(0) }
-    val lineHeightPx = with(density) { PromptTextStyle.lineHeight.toPx() }
+    val promptTextStyle =
+        PromptTextStyle.copy(
+            fontSize = (48f * preferences.fontScale).sp,
+            lineHeight = (65f * preferences.fontScale).sp,
+        )
+    val policy =
+        PromptViewportConfig(
+            readingHorizonFraction = preferences.readingHorizonFraction,
+        )
+    val lineHeightPx = with(density) { promptTextStyle.lineHeight.toPx() }
     val padding =
         promptViewportPadding(
             viewportHeightPx = viewportHeightPx,
             lineHeightPx = lineHeightPx,
-            config = PromptViewportPolicy,
+            config = policy,
         )
     val topSpace = with(density) { padding.topPx.toDp() }
     val bottomSpace = with(density) { padding.bottomPx.toDp() }
@@ -90,6 +102,7 @@ internal fun PromptViewport(
     LaunchedEffect(
         session.follow.committedTokens,
         session.mode,
+        preferences,
         layoutResult,
         viewportHeightPx,
         scrollState.maxValue,
@@ -112,7 +125,7 @@ internal fun PromptViewport(
                     viewportHeightPx = viewportHeightPx,
                     contentHeightPx = contentHeight,
                     currentScrollPx = scrollState.value,
-                    config = PromptViewportPolicy,
+                    config = policy,
                 )
         ) {
             PromptScrollDecision.Hold -> Unit
@@ -167,8 +180,12 @@ internal fun PromptViewport(
             ) {
                 Spacer(Modifier.height(topSpace))
                 Text(
+                    modifier =
+                        Modifier.graphicsLayer {
+                            scaleX = if (preferences.mirrorHorizontally) -1f else 1f
+                        },
                     text = promptText,
-                    style = PromptTextStyle,
+                    style = promptTextStyle,
                     color = AutoPrompterPalette.PromptInk,
                     onTextLayout = { layoutResult = it },
                 )

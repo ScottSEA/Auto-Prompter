@@ -78,13 +78,13 @@ transition through this reducer and shows the current mode, so the UI cannot dri
 
 Optional developer scenarios exercise both layers through continuation, ad-lib, skipped-word,
 repeated-phrase, and long-form cases. Each scenario originates from a canonical `ScriptDocument`
-(see below) rather than a raw string. 148 core behavior tests in `:core:jvmTest`
+(see below) rather than a raw string. 151 core behavior tests in `:core:jvmTest`
 pin these behaviors: 16 aligner tests plus the state bounds, 8 reducer tests covering following,
 manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 document tests
 covering construction/validation, plain-text import, JSON round trip and error handling, and
 document-to-script conversion, 21 document-editor tests (see below), 9 `DocumentStore` contract
 tests, 16 document-library reducer tests (both see below), and 40 live-speech
-capability/identity/error/lifecycle/fold tests. 44 shared UI-model tests
+capability/identity/error/lifecycle/fold tests. 46 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
 expected document identity/title and starts prompting from the document's converted `Script`,
 the diagnostic editor flow (editing marks the draft dirty, applying a valid draft restarts
@@ -113,6 +113,23 @@ in 220 ms and becomes instant when the platform requests reduced motion.
 `PRODUCT.md` and `DESIGN.md` define the focused, calm, professional product direction and the
 "Quiet Stage" visual system. Developer scenario and simulated-transcript controls are hidden by
 default behind `showDeveloperTools`; production launch surfaces use plain product language.
+
+## Durable prompt settings
+
+Prompt display preferences use one strict schema-v1 `PromptPreferences` model:
+
+- font scale from 75% to 200%,
+- reading horizon from 25% to 60% from the top, and
+- horizontal mirror mode for beam-splitter/reflective rigs.
+
+The shared workspace disables settings controls until durable state loads, so startup cannot
+overwrite an immediate user edit. Updates are coalesced through one serialized writer; blocking
+Android persistence cannot let an older save finish after a newer one. Android stores strict JSON
+in app-private `SharedPreferences`; web stores the same JSON in origin-local `localStorage`.
+Failures are visible but nonfatal, and the latest successful write clears stale error state.
+Font scale changes both prompt size and line height, the horizon feeds the same pure scroll policy,
+and only prompt text is mirrored. Headless web validation changes all three settings and confirms
+they survive a full page reload.
 
 ## Permanent unlock
 
@@ -694,6 +711,14 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 Open `webApp/build/dist/wasmJs/productionExecutable/index.html` through any static file server
 (it will not run from a `file://` URL because it loads a wasm module). The preview requires a
 modern browser with WasmGC support.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs the same repository gate on pull requests and pushes to `main` or
+`v-sb-*`: all JVM/unit suites, real headless Chrome store/speech tests, Android media/billing tests,
+Drive JVM plus Android/Wasm compilation, Android APK/lint, and the production web distribution.
+The debug APK, lint report, and web distribution are uploaded as workflow artifacts even when a
+later step fails.
 
 ### Web build note
 

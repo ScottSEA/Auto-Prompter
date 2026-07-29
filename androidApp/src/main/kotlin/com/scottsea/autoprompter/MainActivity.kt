@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var modelInstaller: AndroidSpeechModelInstaller
     private lateinit var billingGateway: PlayPermanentUnlockBillingGateway
     private lateinit var entitlementCache: AndroidPermanentEntitlementCache
+    private lateinit var promptPreferencesStore: AndroidPromptPreferencesStore
 
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var speech: LiveSpeechRuntime by mutableStateOf(
@@ -71,6 +72,7 @@ class MainActivity : ComponentActivity() {
         store = createRoomDocumentStore(applicationContext)
         modelInstaller = createAndroidSpeechModelInstaller(applicationContext)
         entitlementCache = AndroidPermanentEntitlementCache(applicationContext)
+        promptPreferencesStore = AndroidPromptPreferencesStore(applicationContext)
         billingGateway =
             PlayPermanentUnlockBillingGateway(
                 context = applicationContext,
@@ -92,6 +94,7 @@ class MainActivity : ComponentActivity() {
                 onSpeechPermissionRequest = ::ensureMicrophonePermission,
                 entitlementState = entitlement,
                 billingGateway = billingGateway,
+                preferencesStore = promptPreferencesStore,
             )
         }
 

@@ -48,6 +48,7 @@ fun main() {
     // runtime; either way the tracer's live speech card degrades honestly. It owns its own mic and
     // is online / vendor-dependent -- see the README live speech section.
     val speech = browserLiveSpeechRuntime()
+    val promptPreferencesStore = WebPromptPreferencesStore()
 
     bootstrapScope.launch {
         try {
@@ -69,6 +70,7 @@ fun main() {
             is BootstrapState.Ready -> TracerApp(
                 store = current.store,
                 speech = speech,
+                preferencesStore = promptPreferencesStore,
                 commerceUnavailableMessage =
                     "Premium Android features use one permanent unlock. " +
                         "Purchase and restore are available only in the Android app.",

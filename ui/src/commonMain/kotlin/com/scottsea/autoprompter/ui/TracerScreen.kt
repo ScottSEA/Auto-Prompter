@@ -42,6 +42,8 @@ import com.scottsea.autoprompter.core.entitlement.PermanentUnlockBillingGateway
 import com.scottsea.autoprompter.core.entitlement.ProductCapability
 import com.scottsea.autoprompter.core.entitlement.capabilitiesFor
 import com.scottsea.autoprompter.core.progressIn
+import com.scottsea.autoprompter.core.settings.PromptPreferences
+import com.scottsea.autoprompter.core.settings.PromptPreferencesStore
 import com.scottsea.autoprompter.core.document.BlockId
 import com.scottsea.autoprompter.core.document.editor.EditorAction
 import com.scottsea.autoprompter.core.document.editor.EditorValidationIssue
@@ -68,7 +70,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /** The language the diagnostic live speech card requests. Configurable later via the session plan. */
@@ -84,6 +88,7 @@ fun TracerApp(
     entitlementState: PermanentEntitlementState? = null,
     billingGateway: PermanentUnlockBillingGateway? = null,
     commerceUnavailableMessage: String? = null,
+    preferencesStore: PromptPreferencesStore? = null,
     showDeveloperTools: Boolean = false,
     onStoreFailure: (Throwable) -> Unit = { throw it },
 ) {
@@ -97,6 +102,7 @@ fun TracerApp(
                 entitlementState,
                 billingGateway,
                 commerceUnavailableMessage,
+                preferencesStore,
                 showDeveloperTools,
                 onStoreFailure,
             )
@@ -114,6 +120,7 @@ fun TracerScreen(
     entitlementState: PermanentEntitlementState?,
     billingGateway: PermanentUnlockBillingGateway?,
     commerceUnavailableMessage: String?,
+    preferencesStore: PromptPreferencesStore?,
     showDeveloperTools: Boolean,
     onStoreFailure: (Throwable) -> Unit,
 ) {
@@ -125,9 +132,65 @@ fun TracerScreen(
     val scope = rememberCoroutineScope()
     val rootFocusRequester = remember { FocusRequester() }
     var remoteKeyState by remember { mutableStateOf(RemoteKeyInputState()) }
+    var promptPreferences by remember(preferencesStore) {
+        mutableStateOf(PromptPreferences.DEFAULT)
+    }
+    var preferencesLoaded by remember(preferencesStore) {
+        mutableStateOf(preferencesStore == null)
+    }
+    var preferencesFailure by remember(preferencesStore) { mutableStateOf<String?>(null) }
+    var preferencesSaveJob by remember(preferencesStore) { mutableStateOf<Job?>(null) }
+    var pendingPreferencesSave by remember(preferencesStore) {
+        mutableStateOf<PromptPreferences?>(null)
+    }
 
     LaunchedEffect(Unit) {
         rootFocusRequester.requestFocus()
+    }
+
+    LaunchedEffect(preferencesStore) {
+        val store = preferencesStore ?: return@LaunchedEffect
+        try {
+            promptPreferences = store.load()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            preferencesFailure = failure.message ?: "Could not load prompt settings."
+        } finally {
+            preferencesLoaded = true
+        }
+    }
+
+    DisposableEffect(preferencesStore) {
+        onDispose {
+            preferencesSaveJob?.cancel()
+        }
+    }
+
+    fun updatePromptPreferences(next: PromptPreferences) {
+        promptPreferences = next
+        preferencesFailure = null
+        rootFocusRequester.requestFocus()
+        val store = preferencesStore ?: return
+        pendingPreferencesSave = next
+        if (preferencesSaveJob?.isActive == true) return
+        preferencesSaveJob =
+            scope.launch {
+                while (true) {
+                    val queued = pendingPreferencesSave ?: break
+                    pendingPreferencesSave = null
+                    try {
+                        withContext(NonCancellable) {
+                            store.save(queued)
+                        }
+                        preferencesFailure = null
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        preferencesFailure = failure.message ?: "Could not save prompt settings."
+                    }
+                }
+            }
     }
 
     fun runRemoteCommand(command: PromptRemoteCommand) {
@@ -201,6 +264,7 @@ fun TracerScreen(
 
         PromptViewport(
             session = model.session,
+            preferences = promptPreferences,
             onUserScroll = {
                 updateModel(::holdPrompt)
             },
@@ -250,6 +314,13 @@ fun TracerScreen(
                 },
             ) { Text("Restart") }
         }
+
+        PromptPreferencesSection(
+            preferences = promptPreferences,
+            loaded = preferencesLoaded,
+            failure = preferencesFailure,
+            onChange = ::updatePromptPreferences,
+        )
 
         if (showDeveloperTools) {
             Card {

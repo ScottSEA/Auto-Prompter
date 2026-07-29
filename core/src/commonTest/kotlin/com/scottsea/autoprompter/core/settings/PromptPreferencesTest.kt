@@ -1,0 +1,45 @@
+package com.scottsea.autoprompter.core.settings
+
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+
+class PromptPreferencesTest {
+    @Test
+    fun defaultsFavorDistanceReadingAndFortyPercentHorizon() {
+        assertEquals(
+            PromptPreferences(
+                fontScale = 1f,
+                readingHorizonFraction = 0.40f,
+                mirrorHorizontally = false,
+            ),
+            PromptPreferences.DEFAULT,
+        )
+    }
+
+    @Test
+    fun invalidDisplayValuesFailExplicitly() {
+        assertFailsWith<IllegalArgumentException> {
+            PromptPreferences(fontScale = 0.5f, readingHorizonFraction = 0.4f, false)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            PromptPreferences(fontScale = 1f, readingHorizonFraction = 0.8f, false)
+        }
+    }
+
+    @Test
+    fun strictSchemaRoundTripsAndRequiresVersion() {
+        val preferences =
+            PromptPreferences(
+                fontScale = 1.5f,
+                readingHorizonFraction = 0.35f,
+                mirrorHorizontally = true,
+            )
+        val encoded = encodePromptPreferences(preferences)
+
+        assertEquals(preferences, decodePromptPreferences(encoded))
+        assertFailsWith<Exception> {
+            decodePromptPreferences(encoded.replace("\"schemaVersion\":1,", ""))
+        }
+    }
+}
