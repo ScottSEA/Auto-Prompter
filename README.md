@@ -694,8 +694,11 @@ The current app version is the `app.version` semantic version in `gradle.propert
 increment for compatible fixes/build changes, a minor increment for backward-compatible features,
 and a major increment for incompatible product/data changes. Android `versionCode` is derived from
 the same `major.minor.patch` value, so the manifest and artifact cannot drift. Every debug or release
-APK assembly exports exactly one ignored root artifact named `AutoPrompter-v{version}.apk`; the
-current artifact is `AutoPrompter-v1.0.1.apk`.
+APK assembly exports exactly one artifact named `AutoPrompter-v{version}.apk`. It defaults to the
+active checkout root; worktree users can set the Gradle project property
+`autoPrompter.apkExportDir` (or environment variable
+`ORG_GRADLE_PROJECT_autoPrompter.apkExportDir`) to one stable canonical directory. The current
+artifact is `AutoPrompter-v1.0.2.apk`.
 
 ```bash
 # Shared core and UI-model behavior tests (fast, off-device)
@@ -726,7 +729,7 @@ current artifact is `AutoPrompter-v1.0.1.apk`.
 # plus Android/Wasm compilation
 ./gradlew :driveSync:jvmTest :driveSync:compileAndroidMain :driveSync:compileKotlinWasmJs
 
-# Android debug APK -> repository root as AutoPrompter-v1.0.1.apk
+# Android debug APK -> configured export directory as AutoPrompter-v1.0.2.apk
 ./gradlew :androidApp:assembleDebug
 
 # Android lint (report -> androidApp/build/reports/lint-results-debug.html)

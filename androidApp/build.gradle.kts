@@ -32,6 +32,9 @@ abstract class ExportVersionedApk : DefaultTask() {
             "Expected exactly one APK in ${inputDirectory.get().asFile}, found ${apks.size}."
         }
         val destination = outputFile.get().asFile
+        check(destination.parentFile.isDirectory || destination.parentFile.mkdirs()) {
+            "Could not create APK export directory ${destination.parentFile}."
+        }
         Files.copy(
             apks.single().toPath(),
             destination.toPath(),
@@ -58,6 +61,12 @@ val appVersionCode =
         appVersionParts[2]
 require(appVersionCode > 0) { "app.version must produce a positive Android versionCode." }
 val versionedApkName = "AutoPrompter-v$appVersion.apk"
+val apkExportDirectory =
+    providers
+        .gradleProperty("autoPrompter.apkExportDir")
+        .orElse(rootProject.layout.projectDirectory.asFile.absolutePath)
+        .get()
+val versionedApkFile = File(apkExportDirectory, versionedApkName)
 
 // AGP 9 provides built-in Kotlin support, so no separate kotlin-android plugin is applied.
 plugins {
@@ -115,10 +124,10 @@ kotlin {
 fun registerVersionedApkExport(buildType: String) {
     val taskSuffix = buildType.replaceFirstChar(Char::uppercase)
     val exportTask =
-        tasks.register<ExportVersionedApk>("export${taskSuffix}ApkToRoot") {
+        tasks.register<ExportVersionedApk>("export${taskSuffix}Apk") {
             dependsOn("package$taskSuffix")
             inputDirectory.set(layout.buildDirectory.dir("outputs/apk/$buildType"))
-            outputFile.set(rootProject.layout.projectDirectory.file(versionedApkName))
+            outputFile.set(versionedApkFile)
         }
     tasks.matching { it.name == "assemble$taskSuffix" }.configureEach {
         dependsOn(exportTask)
