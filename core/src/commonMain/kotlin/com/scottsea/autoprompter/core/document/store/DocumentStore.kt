@@ -49,11 +49,15 @@ data class DocumentSummary(
 /**
  * The explicit optimistic precondition a caller asserts when saving. It is a sealed type rather than
  * a nullable "expected generation" so "I expect this to be brand new" is distinct from "I expect it
- * to be at exactly this generation" -- there is no magic value.
+ * to be at exactly this generation" -- there is no magic value. Sync can additionally assert the
+ * exact missing state it observed, including its tombstone generation, to prevent recreate/delete ABA.
  */
 sealed interface SavePrecondition {
     /** The caller asserts the ID currently has no live document (a fresh create). */
     data object MustBeMissing : SavePrecondition
+
+    /** The caller asserts the ID is missing at exactly [lastGeneration], including `null` for new. */
+    data class MatchesMissing(val lastGeneration: StoreGeneration?) : SavePrecondition
 
     /** The caller asserts the ID's live document is at exactly [generation] (an update). */
     data class Matches(val generation: StoreGeneration) : SavePrecondition

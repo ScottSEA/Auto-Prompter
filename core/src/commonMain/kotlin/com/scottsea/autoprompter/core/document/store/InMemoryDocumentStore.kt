@@ -46,6 +46,9 @@ class InMemoryDocumentStore : DocumentStore {
             val current = live[id]
             val satisfied = when (precondition) {
                 SavePrecondition.MustBeMissing -> current == null
+                is SavePrecondition.MatchesMissing ->
+                    current == null &&
+                        lastGeneration[id]?.let(::StoreGeneration) == precondition.lastGeneration
                 is SavePrecondition.Matches -> current != null && current.generation == precondition.generation
             }
             if (!satisfied) {

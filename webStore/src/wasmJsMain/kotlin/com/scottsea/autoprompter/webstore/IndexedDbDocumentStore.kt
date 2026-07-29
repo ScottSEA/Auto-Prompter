@@ -193,6 +193,9 @@ public class IndexedDbDocumentStore internal constructor(
             val liveNow = existing != null && !existing.deleted
             val satisfied = when (precondition) {
                 SavePrecondition.MustBeMissing -> !liveNow
+                is SavePrecondition.MatchesMissing ->
+                    !liveNow &&
+                        existing?.generation == precondition.lastGeneration?.value
                 is SavePrecondition.Matches ->
                     liveNow && existing.generation == precondition.generation.value
             }

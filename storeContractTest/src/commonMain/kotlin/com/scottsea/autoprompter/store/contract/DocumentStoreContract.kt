@@ -233,3 +233,40 @@ suspend fun contractConcurrentSamePreconditionSaves(newStore: DocumentStoreFacto
     val current = conflicts.single().current
     assertEquals(DocumentState.Live(winner), current)
 }
+
+/** 10. MatchesMissing rejects both never-created/tombstone mismatches and later missing-state ABA. */
+suspend fun contractMatchesMissingIsAbaSafe(newStore: DocumentStoreFactory) {
+    val store = newStore()
+    val id = DocumentId("doc-1")
+    val first = document("doc-1", "First")
+
+    val created = store.save(first, SavePrecondition.MatchesMissing(lastGeneration = null))
+    assertEquals(SaveOutcome.Saved(StoredDocument(first, StoreGeneration(1))), created)
+    store.delete(id, StoreGeneration(1))
+
+    val staleNeverCreated =
+        store.save(
+            document("doc-1", "Stale new"),
+            SavePrecondition.MatchesMissing(lastGeneration = null),
+        )
+    assertEquals(
+        SaveOutcome.Conflict(DocumentState.Missing(id, StoreGeneration(2))),
+        staleNeverCreated,
+    )
+
+    val reborn = document("doc-1", "Reborn")
+    val recreated =
+        store.save(reborn, SavePrecondition.MatchesMissing(StoreGeneration(2)))
+    assertEquals(SaveOutcome.Saved(StoredDocument(reborn, StoreGeneration(3))), recreated)
+    store.delete(id, StoreGeneration(3))
+
+    val staleTombstone =
+        store.save(
+            document("doc-1", "Stale tombstone"),
+            SavePrecondition.MatchesMissing(StoreGeneration(2)),
+        )
+    assertEquals(
+        SaveOutcome.Conflict(DocumentState.Missing(id, StoreGeneration(4))),
+        staleTombstone,
+    )
+}

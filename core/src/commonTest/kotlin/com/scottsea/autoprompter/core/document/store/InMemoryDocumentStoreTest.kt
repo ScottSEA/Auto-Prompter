@@ -6,6 +6,7 @@ import com.scottsea.autoprompter.store.contract.contractDefensiveAliasing
 import com.scottsea.autoprompter.store.contract.contractDeleteTombstonesAndStaleConflicts
 import com.scottsea.autoprompter.store.contract.contractIndependentIdsAndDeterministicOrder
 import com.scottsea.autoprompter.store.contract.contractMatchesUpdatesAndStaleConflicts
+import com.scottsea.autoprompter.store.contract.contractMatchesMissingIsAbaSafe
 import com.scottsea.autoprompter.store.contract.contractMustBeMissingAgainstLiveConflicts
 import com.scottsea.autoprompter.store.contract.contractMustBeMissingCreatesGenerationOne
 import com.scottsea.autoprompter.store.contract.contractNeverCreatedIsMissing
@@ -48,4 +49,7 @@ class InMemoryDocumentStoreTest {
 
     @Test
     fun concurrentSamePreconditionSaves() = runTest { contractConcurrentSamePreconditionSaves(newStore) }
+
+    @Test
+    fun matchesMissingIsAbaSafe() = runTest { contractMatchesMissingIsAbaSafe(newStore) }
 }

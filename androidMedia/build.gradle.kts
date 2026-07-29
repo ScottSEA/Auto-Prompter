@@ -5,6 +5,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 // recording without moving platform types through :core or :ui.
 plugins {
     alias(libs.plugins.androidLibrary)
+    alias(libs.plugins.kotlinSerialization)
 }
 
 android {
@@ -30,6 +31,7 @@ kotlin {
 dependencies {
     implementation(projects.core)
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.sherpa.onnx.android)
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)

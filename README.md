@@ -12,13 +12,13 @@ unchanged on Android and in the browser, while optional developer scenarios exer
 | Module               | Type                              | Responsibility |
 |----------------------|-----------------------------------|----------------|
 | `:core`              | KMP library (jvm, android, wasmJs) | Immutable script/hypothesis domain, the canonical serializable `ScriptDocument` format, the pure document-editor reducer, the public `ScriptFollower` follow interface, the pure `reducePromptSession` session state machine, the `DocumentStore` seam, and its `InMemoryDocumentStore` reference adapter. Depends on no adapter. |
-| `:storeContractTest` | KMP test-support library (jvm, android, wasmJs) | Owns the nine reusable `DocumentStore` contract behaviors as ordinary functions so every adapter runs the exact same assertions. Test-only support; nothing production depends on it. |
+| `:storeContractTest` | KMP test-support library (jvm, android, wasmJs) | Owns the ten reusable `DocumentStore` contract behaviors as ordinary functions so every adapter runs the exact same assertions. Test-only support; nothing production depends on it. |
 | `:roomStore`         | KMP library (jvm, androidLibrary) | Durable Room 3 / SQLite `RoomDocumentStore` adapter for the `DocumentStore` seam, plus its `jvm()` / Android factory functions. Depends inward on `:core`; keeps Room/KSP codegen out of `:core` and `:ui`. |
 | `:webStore`          | KMP library (wasmJs) | Durable browser `IndexedDbDocumentStore` adapter for the `DocumentStore` seam over **IndexedDB** (via `com.juul.indexeddb`), plus its suspend `openIndexedDbDocumentStore(...)` factory. Depends inward on `:core`; keeps IndexedDB/JS interop out of `:core` and `:ui`. |
 | `:webSpeech`         | KMP library (wasmJs) | Capability-detected browser `LiveSpeechRuntime` adapter over the vendor **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`), plus its `browserLiveSpeechRuntime()` factory. Maps `onstart`/`onresult`/`onerror`/`onend` to the shared `SpeechEvent` stream behind an internal engine seam; no Web Speech types escape. Depends inward on `:core` only. |
-| `:androidMedia`      | Android library | Offline `LiveSpeechRuntime` adapter over one owned `AudioRecord` and sherpa-onnx streaming Zipformer, plus pinned model metadata and resumable, checksum-verified, atomic provisioning. Depends inward on `:core`; keeps Android audio, networking, storage, and sherpa/JNI types out of shared code. |
+| `:androidMedia`      | Android library | Offline `LiveSpeechRuntime` adapter over one owned `AudioRecord` and sherpa-onnx streaming Zipformer, pinned model provisioning, and a crash-recoverable encoded-sample recording journal. Depends inward on `:core`; keeps Android audio, networking, storage, and sherpa/JNI types out of shared code. |
 | `:androidBilling`    | Android library | Google Play Billing 9.1 adapter for one permanent non-consumable unlock, plus Android Keystore-backed tamper-evident offline cache. Depends inward on `:core`; Play types never cross into shared policy. |
-| `:driveSync`         | KMP library (jvm, androidLibrary, wasmJs) | No-CAS remote sync protocol built from immutable content-addressed revision DAGs, tombstones, explicit conflicts, strict manifests, and a small remote-object transport seam. Google auth/Drive REST adapters remain composition-root work. |
+| `:driveSync`         | KMP library (jvm, androidLibrary, wasmJs) | No-CAS remote sync protocol built from immutable content-addressed revision DAGs, tombstones, explicit conflicts, strict manifests, an executable local/remote sync planner, and a small remote-object transport seam. Google auth/Drive REST adapters remain composition-root work. |
 | `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose prompt workspace with a distance-readable viewport, product-facing speech/editor/library controls, and optional developer scenarios. Dispatches all intent through `:core` reducers and takes injected persistence/speech adapters; holds no alignment, storage-construction, or recognition logic of its own. |
 | `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, owns the process-wide model installer, injects either the offline runtime or an explicit unsupported runtime, bridges Start-time microphone permission, and hosts the shared screen. |
 | `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that opens the durable IndexedDB store, feature-detects and injects `browserLiveSpeechRuntime()`, and serves the shared screen. |
@@ -78,11 +78,11 @@ transition through this reducer and shows the current mode, so the UI cannot dri
 
 Optional developer scenarios exercise both layers through continuation, ad-lib, skipped-word,
 repeated-phrase, and long-form cases. Each scenario originates from a canonical `ScriptDocument`
-(see below) rather than a raw string. 151 core behavior tests in `:core:jvmTest`
+(see below) rather than a raw string. 152 core behavior tests in `:core:jvmTest`
 pin these behaviors: 16 aligner tests plus the state bounds, 8 reducer tests covering following,
 manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 document tests
 covering construction/validation, plain-text import, JSON round trip and error handling, and
-document-to-script conversion, 21 document-editor tests (see below), 9 `DocumentStore` contract
+document-to-script conversion, 21 document-editor tests (see below), 10 `DocumentStore` contract
 tests, 16 document-library reducer tests (both see below), and 40 live-speech
 capability/identity/error/lifecycle/fold tests. 46 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
@@ -171,6 +171,15 @@ short-lived access tokens without refresh tokens; no unattended web sync is clai
 garbage collection is intentionally deferred because deleting history without remote CAS/client
 acknowledgement risks data loss.
 
+`planDocumentSync(...)` is a pure local/remote planner over the current `DocumentState`, resolved
+remote state, and last known convergence anchor. Initial one-sided state is imported or uploaded;
+one-sided changes produce an executable apply/upload plan; equal content with a changed remote head
+converges by advancing only the anchor; concurrent edits, missing remote history, and multi-head
+remote state remain explicit typed conflicts. Local apply plans carry the exact observed live
+generation or missing/tombstone generation. Callers can therefore apply them through
+`DocumentStore.save/delete` atomically without a recreate/delete ABA window, then record a new
+anchor only after both local and immutable-remote operations succeed.
+
 ## Recording foundation
 
 Recording now has a pure shared lifecycle (`Idle -> Preparing -> Previewing -> Recording ->
@@ -189,6 +198,15 @@ requirements, and hands CameraX an app-owned encoder surface; CameraX `Recorder`
 not used because it would own microphone capture. Actual MediaCodec encoding, camera timestamps,
 preview binding, mux/recovery, orientation, thermal behavior, and CameraX-vs-Camera2 viability
 remain physical-device gates. The compile spike does not claim they work on hardware yet.
+
+`FileRecordingJournal` durably stages encoded audio/video samples before muxing. Each sample is
+written and file-synced, atomically renamed, then referenced by a strict atomically replaced manifest
+containing its exact size and SHA-256. Parent directory entries are fsynced after each rename; on
+production Android this uses `android.system.Os.fsync`, while host JVM tests use a directory
+`FileChannel` where the host permits it (Windows does not guarantee directory fsync). A session-wide
+OS `FileLock` permits one active writer across journal instances/processes and is released explicitly
+by suspend `close()`. Recovery rejects missing, resized, re-ordered, unhashed, or non-monotonic sample
+state and returns an explicit discard-empty, finalize-partial, or finalize-ready plan.
 
 ## The canonical script document
 
@@ -305,8 +323,10 @@ Concurrency is optimistic and explicit, never nullable magic. Each document ID c
 mutation for an ID is generation 1, and every later successful save or delete increments it by
 exactly one. Generations are monotonic **across delete/recreate**: deleting exposes a *tombstone*
 generation, and recreating resumes at tombstone + 1. Callers pin their intent with a sealed
-`SavePrecondition` -- `MustBeMissing` (a fresh create) or `Matches(generation)` (an update of a
-known live generation). The store answers reads and conflicts with a sealed `DocumentState` that
+`SavePrecondition`: `MustBeMissing` (any missing state, for an interactive create),
+`MatchesMissing(lastGeneration)` (the exact never-created/tombstone state observed by sync), or
+`Matches(generation)` (an update of a known live generation). The store answers reads and conflicts
+with a sealed `DocumentState` that
 distinguishes never-created and missing-after-delete from live: `Live(snapshot)` or
 `Missing(id, lastGeneration)`, where a null `lastGeneration` means never created and a non-null one
 is the tombstone. `save` and `delete` return sealed `SaveOutcome`/`DeleteOutcome` values --
@@ -315,21 +335,23 @@ conflicts never throw**; only genuinely invalid input (guarded by the value type
 
 This is what makes the seam **ABA-safe**: create gen 1, delete (tombstone gen 2), recreate
 (gen 3) -- a stale writer still holding `Matches(1)` conflicts instead of silently clobbering the
-recreated document. The store also owns **defensive snapshots**: neither the stored blocks nor the
-returned summary list can be mutated by a caller to affect stored state.
+recreated document. `MatchesMissing(2)` likewise conflicts after another recreate/delete cycle has
+advanced the tombstone to gen 4, so a delayed remote apply cannot resurrect over newer local history.
+The store also owns **defensive snapshots**: neither the stored blocks nor the returned summary list
+can be mutated by a caller to affect stored state.
 
 The reference adapter (`InMemoryDocumentStore`) is concurrency-safe and deterministic with **no
 global singleton**: a single `Mutex` serializes every suspend operation, it keeps live records plus
 the last generation per ID (so tombstones survive delete), `list()` returns a fresh immutable list
 of live summaries ordered deterministically by title then ID, and a failed precondition mutates and
-increments nothing. There is no silent fallback or broad catch. 9 contract behaviors run against it
+increments nothing. There is no silent fallback or broad catch. 10 contract behaviors run against it
 through the reusable functional contract in the **`:storeContractTest`** module (a functional
 runner, not an inheritance framework, so the Room adapter and the IndexedDB adapter
 reuse the exact same assertions without duplicating them): never-created reads, first create at
 gen 1, `MustBeMissing` conflict on a live doc, `Matches` update vs stale-conflict, delete +
 tombstone vs stale/missing delete, ABA-protected recreate, independent per-ID sequences with
 deterministic ordering, defensive aliasing, and a concurrent same-precondition race where exactly
-one save wins and one conflicts.
+one save wins and one conflicts, plus exact missing-state ABA rejection.
 
 ## The document-library reducer
 
@@ -359,7 +381,7 @@ Room/SQLite and web over IndexedDB.
 ## The durable Room store
 
 `:roomStore` ships `RoomDocumentStore` -- the first real durable adapter for the `DocumentStore`
-seam, backed by **Room 3** over **SQLite**. It satisfies the nine-behavior contract exactly (run
+seam, backed by **Room 3** over **SQLite**. It satisfies the ten-behavior contract exactly (run
 against real temporary on-disk SQLite databases on the JVM, one fresh database per behavior) and
 adds durability, so Android now survives process restart. Web has its own durable adapter over
 IndexedDB (see [The durable web store](#the-durable-web-store)).
@@ -403,7 +425,7 @@ directory is **not** gitignored: the JSON is the source-of-truth history that a 
 diffs against. Any change to the Room entities must bump `DocumentDatabase`'s version and check in the
 new exported JSON alongside a migration; the current slice is v1 only, with no migrations.
 
-**Contract reuse.** `:roomStore`'s JVM tests call the same nine functions from `:storeContractTest`
+**Contract reuse.** `:roomStore`'s JVM tests call the same ten functions from `:storeContractTest`
 that `:core` uses for the in-memory adapter -- no behavior is re-specified. On top of them the module
 adds Room-specific durability tests (close/reopen the same file preserves the live document and its
 generation; reopen preserves a tombstone and recreate advances past it), corruption tests (null or
@@ -412,7 +434,7 @@ generation zero each throw explicitly, exercised through a test-only raw-row see
 not weaken the public API), and generation-overflow tests
 (save and delete at `Long.MAX_VALUE` throw without altering the row). `RoomDocumentStore` owns its
 database and exposes an explicit `close()` (`AutoCloseable`); the database and DAO never leak through
-the `DocumentStore` interface. The module currently has 21 JVM tests: the 9 shared contract
+the `DocumentStore` interface. The module currently has 22 JVM tests: the 10 shared contract
 behaviors plus smoke, durability, corruption, and generation-overflow coverage.
 
 **Android durability & lifecycle.** `MainActivity` builds one Room-backed store from the
@@ -434,7 +456,7 @@ reload-required error instead of leaving dead controls. See [The durable web sto
 ## The durable web store
 
 `:webStore` ships `IndexedDbDocumentStore` -- the durable web adapter for the `DocumentStore` seam,
-backed by the browser's **IndexedDB**. It satisfies the same nine-behavior contract exactly (run in
+backed by the browser's **IndexedDB**. It satisfies the same ten-behavior contract exactly (run in
 a **real headless Chromium**, one fresh uniquely-named database per behavior) and adds
 browser-specific durability, corruption, generation-overflow, and concurrency tests. This is the web
 analogue of the Room store: reloading the page, or restarting the browser, preserves saved
@@ -485,11 +507,11 @@ the first failure so blocked isolation cannot pass unnoticed. The web app uses t
 database name and observes `isOpenFlow`; a version-change/close event transitions bootstrap to a
 reload-required error.
 
-**Contract reuse.** `:webStore`'s browser tests call the same nine functions from
+**Contract reuse.** `:webStore`'s browser tests call the same ten functions from
 `:storeContractTest` that `:core` and `:roomStore` use -- no behavior is re-specified. To let the
 IndexedDB adapter open asynchronously, the contract's store-factory type is a **suspend** function;
 the in-memory and Room adapters pass their existing non-suspend constructors unchanged, and the
-production `DocumentStore` interface is untouched. On top of the nine shared behaviors the module
+production `DocumentStore` interface is untouched. On top of the ten shared behaviors the module
 adds browser-specific tests: close/reopen the same database preserves the live document and its
 generation; a tombstone survives reopen and recreate advances past it; malformed payload,
 id/title mismatch, invalid tombstone, generation `0`, and non-numeric/overflow generation each throw
@@ -497,7 +519,7 @@ before any read or mutation; a `Long.MAX_VALUE` mutation fails without altering 
 **independently opened** store instances on the same database satisfy the concurrent compare-and-set
 (proving serialization holds across connections, not just within one instance). Every test uses a
 unique database name and closes then `deleteDatabase`es it afterwards -- including on failure -- so
-no test pollutes another and no open connection blocks deletion. The module has 30 browser tests: 9
+no test pollutes another and no open connection blocks deletion. The module has 31 browser tests: 10
 shared contract behaviors plus smoke (1), durability (2), corruption (9), generation-overflow (2),
 concurrency (1), pure row-mapping (4), cleanup-failure (1), and cross-version lifecycle (1) coverage.
 
@@ -672,12 +694,12 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 # Shared core and UI-model behavior tests (fast, off-device)
 ./gradlew :core:jvmTest :ui:jvmTest
 
-# Durable Room store: 9 reused contract behaviors on real temp SQLite DBs,
+# Durable Room store: 10 reused contract behaviors on real temp SQLite DBs,
 # plus reopen/corruption/overflow tests (off-device, JVM)
 ./gradlew :roomStore:jvmTest
 
-# Durable web store: the same 9 reused contract behaviors plus browser-specific
-# durability/corruption/overflow/concurrency/lifecycle tests, in real headless Chromium (30 tests)
+# Durable web store: the same 10 reused contract behaviors plus browser-specific
+# durability/corruption/overflow/concurrency/lifecycle tests, in real headless Chromium (31 tests)
 ./gradlew :webStore:wasmJsBrowserTest
 
 # Browser Web Speech adapter: capability detection, callback->SpeechEvent mapping, revision
@@ -686,13 +708,15 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 ./gradlew :webSpeech:wasmJsBrowserTest
 
 # Android offline speech + provisioning: model/session/resource tests, resumable transfer,
-# cancellation, storage, verification, promotion rollback, PCM fan-out, and CameraX seam (38 tests)
+# cancellation, storage, verification, promotion rollback, PCM fan-out, recording journal,
+# and CameraX seam (43 tests)
 ./gradlew :androidMedia:testDebugUnitTest
 
 # Permanent unlock reducer/cache tests and Android Play Billing adapter compilation
 ./gradlew :androidBilling:testDebugUnitTest :androidBilling:assembleDebug
 
-# Immutable Drive revision/manifest/transport protocol plus Android/Wasm compilation
+# Immutable Drive revision/manifest/transport protocol and sync planner (28 JVM tests),
+# plus Android/Wasm compilation
 ./gradlew :driveSync:jvmTest :driveSync:compileAndroidMain :driveSync:compileKotlinWasmJs
 
 # Android debug APK -> androidApp/build/outputs/apk/debug/
