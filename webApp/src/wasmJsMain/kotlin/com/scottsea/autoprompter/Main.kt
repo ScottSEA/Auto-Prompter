@@ -69,6 +69,9 @@ fun main() {
             is BootstrapState.Ready -> TracerApp(
                 store = current.store,
                 speech = speech,
+                commerceUnavailableMessage =
+                    "Premium Android features use one permanent unlock. " +
+                        "Purchase and restore are available only in the Android app.",
                 onStoreFailure = { failure ->
                     state.value = BootstrapState.Failed(
                         "Local database operation failed: " +

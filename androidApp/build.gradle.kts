@@ -10,6 +10,7 @@ dependencies {
     implementation(projects.ui)
     implementation(projects.roomStore)
     implementation(projects.androidMedia)
+    implementation(projects.androidBilling)
     implementation(libs.androidx.activity.compose)
     implementation(libs.compose.foundation)
     implementation(libs.compose.material3)

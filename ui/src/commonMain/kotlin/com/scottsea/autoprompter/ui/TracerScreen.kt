@@ -37,6 +37,10 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import com.scottsea.autoprompter.core.FollowMode
 import com.scottsea.autoprompter.core.PromptRemoteCommand
+import com.scottsea.autoprompter.core.entitlement.PermanentEntitlementState
+import com.scottsea.autoprompter.core.entitlement.PermanentUnlockBillingGateway
+import com.scottsea.autoprompter.core.entitlement.ProductCapability
+import com.scottsea.autoprompter.core.entitlement.capabilitiesFor
 import com.scottsea.autoprompter.core.progressIn
 import com.scottsea.autoprompter.core.document.BlockId
 import com.scottsea.autoprompter.core.document.editor.EditorAction
@@ -77,6 +81,9 @@ fun TracerApp(
     speech: LiveSpeechRuntime,
     speechProvisioner: SpeechModelProvisioner? = null,
     onSpeechPermissionRequest: (suspend () -> Boolean)? = null,
+    entitlementState: PermanentEntitlementState? = null,
+    billingGateway: PermanentUnlockBillingGateway? = null,
+    commerceUnavailableMessage: String? = null,
     showDeveloperTools: Boolean = false,
     onStoreFailure: (Throwable) -> Unit = { throw it },
 ) {
@@ -87,6 +94,9 @@ fun TracerApp(
                 speech,
                 speechProvisioner,
                 onSpeechPermissionRequest,
+                entitlementState,
+                billingGateway,
+                commerceUnavailableMessage,
                 showDeveloperTools,
                 onStoreFailure,
             )
@@ -101,6 +111,9 @@ fun TracerScreen(
     speech: LiveSpeechRuntime,
     speechProvisioner: SpeechModelProvisioner?,
     onSpeechPermissionRequest: (suspend () -> Boolean)?,
+    entitlementState: PermanentEntitlementState?,
+    billingGateway: PermanentUnlockBillingGateway?,
+    commerceUnavailableMessage: String?,
     showDeveloperTools: Boolean,
     onStoreFailure: (Throwable) -> Unit,
 ) {
@@ -138,6 +151,9 @@ fun TracerScreen(
     val percent = (model.session.follow.progressIn(model.session.script) * 100).roundToInt()
     val following = model.session.mode == FollowMode.Following
     val modeLabel = if (following) "Following speech" else "Manual hold"
+    val speechPremiumAllowed =
+        entitlementState == null ||
+            ProductCapability.OfflineSpeechFollowing in capabilitiesFor(entitlementState)
 
     Column(
         modifier = Modifier
@@ -259,12 +275,19 @@ fun TracerScreen(
             }
         }
 
+        PermanentUnlockSection(
+            state = entitlementState,
+            gateway = billingGateway,
+            commerceUnavailableMessage = commerceUnavailableMessage,
+        )
+
         LiveSpeechSection(
             model = model,
             updateModel = updateModel,
             runtime = speech,
             provisioner = speechProvisioner,
             onPermissionRequest = onSpeechPermissionRequest,
+            premiumAllowed = speechPremiumAllowed,
             showDeveloperTools = showDeveloperTools,
             scope = scope,
         )
@@ -299,6 +322,7 @@ private fun LiveSpeechSection(
     runtime: LiveSpeechRuntime,
     provisioner: SpeechModelProvisioner?,
     onPermissionRequest: (suspend () -> Boolean)?,
+    premiumAllowed: Boolean,
     showDeveloperTools: Boolean,
     scope: CoroutineScope,
 ) {
@@ -354,13 +378,21 @@ private fun LiveSpeechSection(
         }
     }
 
+    LaunchedEffect(premiumAllowed) {
+        if (!premiumAllowed) {
+            installJob?.cancel()
+            installJob = null
+            release(session)
+        }
+    }
+
     Card {
         Column(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text("Speech following", style = MaterialTheme.typography.labelLarge)
-            if (provisioner != null && provisioningState != null) {
+            if (premiumAllowed && provisioner != null && provisioningState != null) {
                 SpeechProvisioningSection(
                     state = provisioningState,
                     installing = installJob?.isActive == true,
@@ -383,6 +415,12 @@ private fun LiveSpeechSection(
                 )
             }
             Text(capabilitySummary(capability), style = MaterialTheme.typography.bodySmall)
+            if (!premiumAllowed) {
+                Text(
+                    "Offline speech following is included with the permanent unlock.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             if (!capability.supported) {
                 Text(
                     if (showDeveloperTools) {
@@ -409,7 +447,7 @@ private fun LiveSpeechSection(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(
-                    enabled = capability.supported && !starting && session == null,
+                    enabled = premiumAllowed && capability.supported && !starting && session == null,
                     onClick = {
                         if (starting || session != null) return@Button
                         starting = true

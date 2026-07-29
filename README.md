@@ -17,14 +17,17 @@ unchanged on Android and in the browser, while optional developer scenarios exer
 | `:webStore`          | KMP library (wasmJs) | Durable browser `IndexedDbDocumentStore` adapter for the `DocumentStore` seam over **IndexedDB** (via `com.juul.indexeddb`), plus its suspend `openIndexedDbDocumentStore(...)` factory. Depends inward on `:core`; keeps IndexedDB/JS interop out of `:core` and `:ui`. |
 | `:webSpeech`         | KMP library (wasmJs) | Capability-detected browser `LiveSpeechRuntime` adapter over the vendor **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`), plus its `browserLiveSpeechRuntime()` factory. Maps `onstart`/`onresult`/`onerror`/`onend` to the shared `SpeechEvent` stream behind an internal engine seam; no Web Speech types escape. Depends inward on `:core` only. |
 | `:androidMedia`      | Android library | Offline `LiveSpeechRuntime` adapter over one owned `AudioRecord` and sherpa-onnx streaming Zipformer, plus pinned model metadata and resumable, checksum-verified, atomic provisioning. Depends inward on `:core`; keeps Android audio, networking, storage, and sherpa/JNI types out of shared code. |
+| `:androidBilling`    | Android library | Google Play Billing 9.1 adapter for one permanent non-consumable unlock, plus Android Keystore-backed tamper-evident offline cache. Depends inward on `:core`; Play types never cross into shared policy. |
+| `:driveSync`         | KMP library (jvm, androidLibrary, wasmJs) | No-CAS remote sync protocol built from immutable content-addressed revision DAGs, tombstones, explicit conflicts, strict manifests, and a small remote-object transport seam. Google auth/Drive REST adapters remain composition-root work. |
 | `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose prompt workspace with a distance-readable viewport, product-facing speech/editor/library controls, and optional developer scenarios. Dispatches all intent through `:core` reducers and takes injected persistence/speech adapters; holds no alignment, storage-construction, or recognition logic of its own. |
 | `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, owns the process-wide model installer, injects either the offline runtime or an explicit unsupported runtime, bridges Start-time microphone permission, and hosts the shared screen. |
 | `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that opens the durable IndexedDB store, feature-detects and injects `browserLiveSpeechRuntime()`, and serves the shared screen. |
 
-Adapters (`:androidApp`, `:webApp`) depend inward on `:ui` -> `:core`; `:androidApp` also
-depends on `:roomStore` and `:androidMedia` -> `:core`, and `:webApp` depends on `:webStore` -> `:core` and
-`:webSpeech` -> `:core`. `:roomStore`, `:webStore`, and `:webSpeech` depend only on `:core`;
-`:core` never depends outward on Room, IndexedDB, Web Speech, Android audio, or sherpa-onnx.
+Adapters (`:androidApp`, `:webApp`) depend inward on `:ui` -> `:core`; `:androidApp` also depends on
+`:roomStore`, `:androidMedia`, and `:androidBilling`, while `:webApp` depends on `:webStore` and
+`:webSpeech`. `:driveSync` is a KMP adapter/protocol module shared by both composition roots.
+`:core` never depends outward on Room, IndexedDB, Web Speech, Play Billing, Drive, Android audio,
+CameraX, or sherpa-onnx.
 `:storeContractTest` is consumed only by adapter test source sets.
 
 ### Why this shape
@@ -75,13 +78,13 @@ transition through this reducer and shows the current mode, so the UI cannot dri
 
 Optional developer scenarios exercise both layers through continuation, ad-lib, skipped-word,
 repeated-phrase, and long-form cases. Each scenario originates from a canonical `ScriptDocument`
-(see below) rather than a raw string. 138 core behavior tests in `:core:jvmTest`
+(see below) rather than a raw string. 148 core behavior tests in `:core:jvmTest`
 pin these behaviors: 16 aligner tests plus the state bounds, 8 reducer tests covering following,
 manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 document tests
 covering construction/validation, plain-text import, JSON round trip and error handling, and
 document-to-script conversion, 21 document-editor tests (see below), 9 `DocumentStore` contract
 tests, 16 document-library reducer tests (both see below), and 40 live-speech
-capability/identity/error/lifecycle/fold tests. 43 shared UI-model tests
+capability/identity/error/lifecycle/fold tests. 44 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
 expected document identity/title and starts prompting from the document's converted `Script`,
 the diagnostic editor flow (editing marks the draft dirty, applying a valid draft restarts
@@ -110,6 +113,65 @@ in 220 ms and becomes instant when the platform requests reduced motion.
 `PRODUCT.md` and `DESIGN.md` define the focused, calm, professional product direction and the
 "Quiet Stage" visual system. Developer scenario and simulated-transcript controls are hidden by
 default behind `showDeveloperTools`; production launch surfaces use plain product language.
+
+## Permanent unlock
+
+The single product id is `permanent_unlock`, queried as a Google Play `INAPP` one-time product.
+`:androidBilling` uses Play Billing **9.1.0** current APIs: one-time offer tokens,
+`enablePendingPurchases(...)`, auto service reconnection, foreground restore,
+`PurchasesUpdatedListener`, and acknowledgement (never consumption). Pending purchases do not
+unlock. Editing, the script library, manual prompting, and keyboard/remotes remain free; offline
+speech and video recording are premium capabilities.
+
+Entitlement policy lives in `:core`: a store-confirmed purchase unlocks permanently, and a
+previously verified cache remains unlocked through offline/transient failures. Only a successful,
+authoritative online restore that finds no owned purchase revokes it. A non-exportable Android
+Keystore HMAC key signs the local cache; modified cache bytes are rejected. This is honest
+client-side tamper evidence, **not equivalent to backend Play Developer API verification**. No
+service-account or publisher credentials are embedded. Real product query, checkout, pending
+completion, refund/revocation, and license-tester flows remain Play Console/device gated. Web
+offers no checkout and states that purchase/restore occur in the Android app.
+
+## Google Drive App Data sync protocol
+
+`:driveSync` implements the correctness-critical KMP protocol without OAuth credentials:
+
+- Every live document or tombstone is an immutable, strict schema-v1 revision object.
+- Revision ids are SHA-256 hashes over length-prefixed canonical content and sorted parent ids.
+- Parents form a validated acyclic per-document DAG. Unreferenced revisions are heads.
+- Multiple heads are an explicit conflict; no JSON winner or automatic merge is guessed.
+- Resolving a conflict writes one new revision whose parents include every conflicting head.
+- Immutable manifest snapshots are content-addressed startup caches only. Correctness always falls
+  back to scanning revision objects because Drive App Data exposes no documented CAS write.
+- Drive duplicate file names are tolerated through opaque remote object ids; duplicate identical
+  revisions collapse logically after strict content verification.
+
+The module compiles on JVM, Android, and Wasm and includes a pure Kotlin SHA-256 implementation with
+published test vectors. The future Drive transport uses the non-sensitive `drive.appdata` scope.
+Android foreground/manual sync can use Credential Manager plus AuthorizationClient once an OAuth
+client is configured. Web can only promise active-tab, user-authorized sync because GIS supplies
+short-lived access tokens without refresh tokens; no unattended web sync is claimed. Revision DAG
+garbage collection is intentionally deferred because deleting history without remote CAS/client
+acknowledgement risks data loss.
+
+## Recording foundation
+
+Recording now has a pure shared lifecycle (`Idle -> Preparing -> Previewing -> Recording ->
+Stopping -> Finalizing -> Saved`) with explicit recoverable interruption and failure states.
+Source monotonic nanoseconds convert to non-negative, strictly increasing per-track mux
+microseconds from one session epoch.
+
+`:androidMedia` adds immutable timestamped PCM chunks and a no-silent-drop fan-out: every chunk is
+delivered to every configured consumer with backpressure, and a named consumer failure fails the
+fan-out explicitly. This is the foundation for one future 48 kHz `AudioRecord` feeding both the
+sherpa resampler and AAC encoder.
+
+CameraX **1.6.1** is pinned as the current stable line compatible with this repo. A custom
+`VideoOutput` compile spike accepts `SurfaceRequest`, captures resolution/dynamic-range/frame-rate
+requirements, and hands CameraX an app-owned encoder surface; CameraX `Recorder` is deliberately
+not used because it would own microphone capture. Actual MediaCodec encoding, camera timestamps,
+preview binding, mux/recovery, orientation, thermal behavior, and CameraX-vs-Camera2 viability
+remain physical-device gates. The compile spike does not claim they work on hardware yet.
 
 ## The canonical script document
 
@@ -541,7 +603,7 @@ result, and synchronous close waits for microphone/JNI teardown. When recording 
 runtime seam stays intact while capture moves to the architecture's single 48 kHz graph and feeds
 this recognizer through a tested resampler.
 
-Thirty-four off-device `:androidMedia:testDebugUnitTest` tests cover model metadata/verification,
+Thirty-eight off-device `:androidMedia:testDebugUnitTest` tests cover model metadata/verification,
 partial and endpoint revision mapping, typed permission/audio/language errors, stop/close failures,
 synchronous cleanup, distinct sessions, capability honesty, resume/range fallback, cancellation
 before and after response headers, storage preflight, corruption rejection, and promotion rollback
@@ -607,8 +669,14 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 ./gradlew :webSpeech:wasmJsBrowserTest
 
 # Android offline speech + provisioning: model/session/resource tests, resumable transfer,
-# cancellation, storage, verification, and promotion rollback; no microphone or JNI is opened (34 tests)
+# cancellation, storage, verification, promotion rollback, PCM fan-out, and CameraX seam (38 tests)
 ./gradlew :androidMedia:testDebugUnitTest
+
+# Permanent unlock reducer/cache tests and Android Play Billing adapter compilation
+./gradlew :androidBilling:testDebugUnitTest :androidBilling:assembleDebug
+
+# Immutable Drive revision/manifest/transport protocol plus Android/Wasm compilation
+./gradlew :driveSync:jvmTest :driveSync:compileAndroidMain :driveSync:compileKotlinWasmJs
 
 # Android debug APK -> androidApp/build/outputs/apk/debug/
 ./gradlew :androidApp:assembleDebug
