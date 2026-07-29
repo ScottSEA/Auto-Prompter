@@ -69,7 +69,7 @@ jobs:
           name: android-debug
           if-no-files-found: warn
           path: |
-            androidApp/build/outputs/apk/debug/*.apk
+            AutoPrompter-v*.apk
             androidApp/build/reports/lint-results-debug.html
 
       - name: Upload web distribution

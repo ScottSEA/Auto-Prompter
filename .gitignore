@@ -9,6 +9,7 @@ kotlin-js-store/
 
 # Android / local tooling
 local.properties
+/AutoPrompter-v*.apk
 *.apk
 *.aab
 

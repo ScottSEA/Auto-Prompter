@@ -690,6 +690,13 @@ The Gradle wrapper downloads its pinned distribution on first run.
 
 Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 
+The current app version is the `app.version` semantic version in `gradle.properties`. Use a patch
+increment for compatible fixes/build changes, a minor increment for backward-compatible features,
+and a major increment for incompatible product/data changes. Android `versionCode` is derived from
+the same `major.minor.patch` value, so the manifest and artifact cannot drift. Every debug or release
+APK assembly exports exactly one ignored root artifact named `AutoPrompter-v{version}.apk`; the
+current artifact is `AutoPrompter-v1.0.1.apk`.
+
 ```bash
 # Shared core and UI-model behavior tests (fast, off-device)
 ./gradlew :core:jvmTest :ui:jvmTest
@@ -719,7 +726,7 @@ Run from the repository root (`./gradlew` on Unix, `.\gradlew.bat` on Windows).
 # plus Android/Wasm compilation
 ./gradlew :driveSync:jvmTest :driveSync:compileAndroidMain :driveSync:compileKotlinWasmJs
 
-# Android debug APK -> androidApp/build/outputs/apk/debug/
+# Android debug APK -> repository root as AutoPrompter-v1.0.1.apk
 ./gradlew :androidApp:assembleDebug
 
 # Android lint (report -> androidApp/build/reports/lint-results-debug.html)
