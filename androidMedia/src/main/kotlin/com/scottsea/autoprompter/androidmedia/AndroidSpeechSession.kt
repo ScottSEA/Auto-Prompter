@@ -53,7 +53,7 @@ internal class AndroidSpeechSession(
     private val sink =
         MutableSharedFlow<SpeechEvent>(
             replay = EVENT_REPLAY,
-            extraBufferCapacity = EVENT_REPLAY,
+            extraBufferCapacity = 0,
             onBufferOverflow = BufferOverflow.DROP_OLDEST,
         )
 

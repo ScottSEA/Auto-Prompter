@@ -183,7 +183,7 @@ fun initialTracerModel(): TracerModel =
         editorSessionSerial = 0L,
         library = DocumentLibraryState(),
         live = LiveSpeechState.INITIAL,
-    )
+    ).let(::reset)
 
 /** Switches to [index] under a fresh editor lifetime and primes its first speech hypothesis. */
 fun selectScenario(model: TracerModel, index: Int): TracerModel {

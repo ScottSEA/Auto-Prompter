@@ -84,7 +84,7 @@ manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 docu
 covering construction/validation, plain-text import, JSON round trip and error handling, and
 document-to-script conversion, 21 document-editor tests (see below), 10 `DocumentStore` contract
 tests, 16 document-library reducer tests (both see below), and 40 live-speech
-capability/identity/error/lifecycle/fold tests. 52 shared UI-model tests
+capability/identity/error/lifecycle/fold tests. 55 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
 expected document identity/title and starts prompting from the document's converted `Script`,
 the diagnostic editor flow (editing marks the draft dirty, applying a valid draft restarts
@@ -109,7 +109,8 @@ Touch/wheel scrolling immediately enters `ManualHold` and relayout never re-snap
 Arrow and Page keys map to previous/next, Space or Enter toggles follow, and Home restarts.
 Presentation-remote and keyboard adapters emit the same platform-free `PromptRemoteCommand`s;
 auto-repeat is consumed so a held key cannot repeatedly toggle or restart. Follow motion completes
-in 90 ms and becomes instant when the platform requests reduced motion.
+without an added animation delay; the dead band prevents jitter without making the viewport chase
+an old speech position.
 
 `Fullscreen` switches to an edge-to-edge Stage Black reading surface containing only the prompt and
 one safe-area-aware `Exit fullscreen` control in the lower-right. The live recognizer is owned above
@@ -544,7 +545,7 @@ The tracer can follow **live** speech, not only simulated hypotheses. The seam l
 `:core` as a small, honestly-scoped set of interfaces:
 
 - `LiveSpeechRuntime` exposes a `SpeechCapability` and a `suspend fun open(plan): SpeechSession`.
-- `SpeechSession` is an `AutoCloseable` that exposes a replaying hot `Flow<SpeechEvent>`, a `suspend start()`
+- `SpeechSession` is an `AutoCloseable` that exposes a bounded hot `Flow<SpeechEvent>`, a `suspend start()`
   (start is explicit, never auto-fired on open, so the browser can call it from inside a user
   gesture), a `suspend stop()`, and `close()`.
 - `SpeechEvent` is a sealed lifecycle: `Starting`, `Listening`, `Hypothesis`, `Ended(reason)`, and
@@ -589,6 +590,8 @@ seam (so tests can drive it with no microphone):
 | `onend`    | `Ended(StoppedByRequest)` if the user called `stop()`, else `Ended(EndedUnexpectedly)`; suppressed when `onerror` already made the session terminal |
 
 Result slots that did not change are **not** re-emitted, and slots before `resultIndex` are skipped.
+Only the newest two event states are retained, so a temporarily slow UI cannot work through a stale
+partial-transcript backlog.
 `no-speech` is surfaced as a terminal typed failure, consistently with the other recognizer errors;
 there is **no automatic restart loop** in this slice -- an unexpected `onend` emits `Ended` and the
 user starts again explicitly. A follow-up `onend` after any `onerror` is suppressed so `Failed`
@@ -597,12 +600,18 @@ before `start`, and `start` after `close`; a second `stop` is an idempotent no-o
 detached exactly once on `close`, active recognition is aborted so the microphone is released, and
 no event can be emitted after `close`.
 
-**Browser limitations, privacy, and network.** The Web Speech API is **vendor-dependent and
-online in practice**: in the major engines recognition audio is streamed to a remote service, so it
-requires network connectivity and is subject to that vendor's availability and privacy handling.
-The browser -- not this app -- **owns the microphone** and prompts the user for permission. This
-runtime is therefore **not offline-guaranteed** (`offlineGuaranteed = false` in its capability),
-and the project makes **no claim of offline web speech support**.
+**On-device-first browser recognition.** Current unprefixed Chromium/Edge Web Speech APIs expose
+`processLocally`, `SpeechRecognition.available()`, and `SpeechRecognition.install()`. The web app
+checks the `en-US` command-quality pack on startup. If it is downloadable, an explicit
+`Install offline model` action lets the browser install it; once ready, new sessions set
+`processLocally = true`, report `offlineGuaranteed = true`, and avoid provider/network latency.
+Install is never automatic. If the API/pack is unavailable, the check times out, install fails, or
+Edge rejects a supposedly-ready pack with `language-not-supported`/`service-not-allowed`, recognition
+falls back to provider mode without trapping the session.
+
+The browser -- not this app -- owns the microphone and any browser-managed language pack. Provider
+fallback may stream audio to a remote vendor service, requires network connectivity, and remains
+subject to that vendor's latency, availability, and privacy handling.
 
 ### Android adapter
 
@@ -652,7 +661,7 @@ result, and synchronous close waits for microphone/JNI teardown. When recording 
 runtime seam stays intact while capture moves to the architecture's single 48 kHz graph and feeds
 this recognizer through a tested resampler.
 
-Forty-four off-device `:androidMedia:testDebugUnitTest` tests cover model metadata/verification,
+Forty-seven off-device `:androidMedia:testDebugUnitTest` tests cover model metadata/verification,
 partial and endpoint revision mapping, typed permission/audio/language errors, stop/close failures,
 synchronous cleanup, distinct sessions, capability honesty, resume/range fallback, cancellation
 before and after response headers, storage preflight, corruption rejection, promotion rollback,
@@ -674,17 +683,24 @@ which aborts active recognition and releases the microphone with no leaked callb
 controller remains composed independently of the visible card, so fullscreen presentation does not
 dispose it. Live hypotheses drive the same prompt reducer and viewport as manual controls. Simulated
 transcript controls are available only when `showDeveloperTools` is explicitly enabled.
+The production default starts at token zero; it never pre-applies a hidden developer hypothesis.
+While recognition is Starting/Listening, settings, commerce, and editor/library subtrees are removed
+from composition so speech updates only render the live prompting surface.
 
 ### Speech-follow responsiveness
 
-Streaming updates are bounded end to end. The Android session retains only the newest two events for
-a late or temporarily slow collector, so stale partials cannot accumulate into seconds of catch-up.
+Streaming updates are bounded end to end. Android and browser sessions retain only the newest two
+events for a late or temporarily slow collector, so stale partials cannot accumulate into seconds
+of catch-up.
 The follower reuses the script's normalized token list instead of copying the full script for every
 partial. The viewport caches the full prompt text and token offsets, then changes at most two style
 ranges (passed text and current word) rather than rebuilding one span per word. On the JVM replay
 harness used during this slice, a 20,000-word follower update dropped from about 597 microseconds to
 13 microseconds, and highlight reconstruction dropped from about 1,696 microseconds to 105
 microseconds. These are comparative host measurements, not claims about device ASR latency.
+Current-word emphasis changes color only, avoiding font-metric changes that would force text
+relayout. Android also reuses its PCM float buffer, skips result JNI calls until a decode occurred,
+and scales sherpa execution from one to four threads based on available processors.
 
 ## Toolchain
 
@@ -721,7 +737,7 @@ APK assembly exports exactly one artifact named `AutoPrompter-v{version}.apk`. I
 active checkout root; worktree users can set the Gradle project property
 `autoPrompter.apkExportDir` (or environment variable
 `ORG_GRADLE_PROJECT_autoPrompter.apkExportDir`) to one stable canonical directory. The current
-artifact is `AutoPrompter-v1.1.0.apk`.
+artifact is `AutoPrompter-v1.1.1.apk`.
 
 ```bash
 # Shared core and UI-model behavior tests (fast, off-device)
@@ -736,13 +752,13 @@ artifact is `AutoPrompter-v1.1.0.apk`.
 ./gradlew :webStore:wasmJsBrowserTest
 
 # Browser Web Speech adapter: capability detection, callback->SpeechEvent mapping, revision
-# monotonicity, error mapping, and start/stop/close state machine, driven by a fake engine in
-# real headless Chromium with no microphone (25 tests)
+# monotonicity, local-pack provisioning/fallback, bounded replay, and session lifecycle,
+# driven by fake engines in real headless Chromium with no microphone (34 tests)
 ./gradlew :webSpeech:wasmJsBrowserTest
 
 # Android offline speech + provisioning: model/session/resource tests, resumable transfer,
 # cancellation, storage, verification, promotion rollback, PCM fan-out, recording journal,
-# and CameraX seam (43 tests)
+# and CameraX seam (47 tests)
 ./gradlew :androidMedia:testDebugUnitTest
 
 # Permanent unlock reducer/cache tests and Android Play Billing adapter compilation
@@ -752,7 +768,7 @@ artifact is `AutoPrompter-v1.1.0.apk`.
 # plus Android/Wasm compilation
 ./gradlew :driveSync:jvmTest :driveSync:compileAndroidMain :driveSync:compileKotlinWasmJs
 
-# Android debug APK -> configured export directory as AutoPrompter-v1.1.0.apk
+# Android debug APK -> configured export directory as AutoPrompter-v1.1.1.apk
 ./gradlew :androidApp:assembleDebug
 
 # Android lint (report -> androidApp/build/reports/lint-results-debug.html)

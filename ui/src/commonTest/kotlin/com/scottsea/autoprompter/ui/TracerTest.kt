@@ -1,10 +1,29 @@
 package com.scottsea.autoprompter.ui
 
 import com.scottsea.autoprompter.core.FollowMode
+import com.scottsea.autoprompter.core.speech.LiveSpeechPhase
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class TracerTest {
+    @Test
+    fun productionDefaultStartsBeforeAnyWordsAreSpoken() {
+        val initial = initialTracerModel()
+
+        assertEquals(0, initial.session.follow.committedTokens)
+        assertEquals("", initial.hypothesisText)
+        assertEquals(-1, initial.stepIndex)
+    }
+
+    @Test
+    fun secondaryWorkspaceToolsAreRemovedFromTheLiveSpeechRenderPath() {
+        assertEquals(false, workspaceToolsVisible(LiveSpeechPhase.Starting))
+        assertEquals(false, workspaceToolsVisible(LiveSpeechPhase.Listening))
+        assertEquals(true, workspaceToolsVisible(LiveSpeechPhase.Idle))
+        assertEquals(true, workspaceToolsVisible(LiveSpeechPhase.Ended))
+        assertEquals(true, workspaceToolsVisible(LiveSpeechPhase.Failed))
+    }
+
     @Test
     fun fullscreenModeChangesOnlyPresentationState() {
         val initial = initialTracerModel()

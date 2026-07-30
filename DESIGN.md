@@ -208,6 +208,8 @@ heavy shadow.
 ### Prompt Surface
 - Stage Black background, Stage White current/ahead copy, and Passed Copy for completed text.
 - The reading horizon stays around 40% from the top. Follow scrolling moves only outside a dead band.
+- Speech-follow corrections snap to the new horizon without animation; recognition latency must not
+  be compounded by decorative motion.
 - Touch or hardware navigation enters Manual Hold immediately; resuming never jumps backward.
 - Fullscreen expands Stage Black edge-to-edge and removes every workspace element except the prompt
   and one outlined, 48dp `Exit fullscreen` control in the lower-right safe area.

@@ -7,8 +7,8 @@ import kotlin.test.assertFailsWith
 
 class PromptViewportTest {
     @Test
-    fun speechScrollTransitionStaysBelowOneTenthSecond() {
-        assertEquals(90, SPEECH_SCROLL_DURATION_MILLIS)
+    fun speechScrollAddsNoAnimationDelay() {
+        assertEquals(0, SPEECH_SCROLL_DURATION_MILLIS)
     }
 
     @Test
@@ -33,6 +33,7 @@ class PromptViewportTest {
         assertEquals(4, highlighted.spanStyles[0].end)
         assertEquals(4, highlighted.spanStyles[1].start)
         assertEquals(7, highlighted.spanStyles[1].end)
+        assertEquals(null, highlighted.spanStyles[1].item.fontWeight)
     }
 
     @Test

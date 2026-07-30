@@ -136,7 +136,7 @@ class AndroidSpeechModelInstaller internal constructor(
                             model = descriptor,
                             downloadedBytes =
                                 minOf(
-                                    descriptor.downloadBytes,
+                                    pack.requiredBytes,
                                     Math.addExact(beforeFile, downloadedForFile),
                                 ),
                             currentFile = file.name,

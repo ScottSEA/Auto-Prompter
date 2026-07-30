@@ -43,6 +43,26 @@ class TracerSpeechProvisioningTest {
     }
 
     @Test
+    fun browserManagedPackDoesNotInventDownloadBytes() {
+        val browserModel =
+            SpeechModelDescriptor(
+                id = "browser-en-US",
+                displayName = "Browser on-device English",
+                language = "en-US",
+                downloadBytes = null,
+            )
+
+        assertEquals(
+            "Offline model: browser language pack not installed.",
+            provisioningStatus(SpeechProvisioningState.Missing(browserModel, stagedBytes = 0L)),
+        )
+        assertEquals(
+            "Offline model: installing browser language pack.",
+            provisioningStatus(SpeechProvisioningState.Installing(browserModel)),
+        )
+    }
+
+    @Test
     fun pausedStateExplainsThatProgressIsPreserved() {
         assertEquals(
             "Offline model: paused at 12 MiB; progress is preserved.",

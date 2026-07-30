@@ -20,8 +20,21 @@ internal class RealSpeechRecognitionEngine(private val recognition: JsAny) : Spe
 
     private var attached = false
 
-    override fun configure(language: String, continuous: Boolean, interimResults: Boolean, maxAlternatives: Int) {
-        configureRecognition(recognition, language, continuous, interimResults, maxAlternatives)
+    override fun configure(
+        language: String,
+        continuous: Boolean,
+        interimResults: Boolean,
+        maxAlternatives: Int,
+        processLocally: Boolean,
+    ) {
+        configureRecognition(
+            recognition,
+            language,
+            continuous,
+            interimResults,
+            maxAlternatives,
+            processLocally,
+        )
         attach()
     }
 
@@ -110,8 +123,10 @@ private external fun newStandardSpeechRecognition(): JsAny
 private external fun newWebkitSpeechRecognition(): JsAny
 
 @JsFun(
-    "(rec, lang, continuous, interim, maxAlt) => { " +
-        "rec.lang = lang; rec.continuous = continuous; rec.interimResults = interim; rec.maxAlternatives = maxAlt; }",
+    "(rec, lang, continuous, interim, maxAlt, local) => { " +
+        "rec.lang = lang; rec.continuous = continuous; rec.interimResults = interim; " +
+        "rec.maxAlternatives = maxAlt; " +
+        "if ('processLocally' in rec) rec.processLocally = local; }",
 )
 private external fun configureRecognition(
     rec: JsAny,
@@ -119,6 +134,7 @@ private external fun configureRecognition(
     continuous: Boolean,
     interim: Boolean,
     maxAlt: Int,
+    processLocally: Boolean,
 )
 
 @JsFun("(rec) => rec.start()")

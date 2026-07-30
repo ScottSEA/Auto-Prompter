@@ -38,7 +38,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.scottsea.autoprompter.core.FollowMode
@@ -52,7 +51,7 @@ import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
 
 private val PromptShape = RoundedCornerShape(20.dp)
-internal const val SPEECH_SCROLL_DURATION_MILLIS: Int = 90
+internal const val SPEECH_SCROLL_DURATION_MILLIS: Int = 0
 
 /** The product's distance-readable prompt surface, driven by committed token progress. */
 @Composable
@@ -133,7 +132,7 @@ internal fun PromptViewport(
             PromptScrollDecision.Hold -> Unit
             is PromptScrollDecision.MoveTo -> {
                 val motionScale = coroutineContext[MotionDurationScale]?.scaleFactor ?: 1f
-                if (motionScale == 0f) {
+                if (motionScale == 0f || SPEECH_SCROLL_DURATION_MILLIS == 0) {
                     scrollState.scrollTo(decision.scrollPx)
                 } else {
                     scrollState.animateScrollTo(
@@ -297,10 +296,7 @@ internal fun promptAnnotatedText(
         }
         if (committedTokens < model.tokenCount) {
             addStyle(
-                SpanStyle(
-                    color = AutoPrompterPalette.Primary,
-                    fontWeight = FontWeight.SemiBold,
-                ),
+                SpanStyle(color = AutoPrompterPalette.Primary),
                 start = currentStart,
                 end = model.tokenEnd(committedTokens),
             )

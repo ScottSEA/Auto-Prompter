@@ -15,6 +15,7 @@ internal class SherpaOnlineRecognizerEngine(
     private val recognizer: OnlineRecognizer
     private val stream: OnlineStream
     private val closed = AtomicBoolean(false)
+    private var waveformBuffer = FloatArray(0)
 
     init {
         val config =
@@ -29,7 +30,10 @@ internal class SherpaOnlineRecognizerEngine(
                                 joiner = model.file("joiner-epoch-99-avg-1.int8.onnx").absolutePath,
                             ),
                         tokens = model.file("tokens.txt").absolutePath,
-                        numThreads = 2,
+                        numThreads =
+                            recognizerThreadCount(
+                                Runtime.getRuntime().availableProcessors(),
+                            ),
                         debug = false,
                         provider = "cpu",
                     ),
@@ -50,9 +54,9 @@ internal class SherpaOnlineRecognizerEngine(
         require(count in 0..samples.size) { "PCM sample count $count exceeds buffer ${samples.size}." }
         if (count == 0) return null
 
-        val waveform = FloatArray(count) { index -> samples[index] / 32_768.0f }
-        stream.acceptWaveform(waveform, sampleRate)
-        decodeReady()
+        waveformBuffer = pcm16ToFloat(samples, count, waveformBuffer)
+        stream.acceptWaveform(waveformBuffer, sampleRate)
+        if (!decodeReady()) return null
 
         val transcript = recognizer.getResult(stream).text
         val endpoint = recognizer.isEndpoint(stream)
@@ -83,9 +87,30 @@ internal class SherpaOnlineRecognizerEngine(
         }
     }
 
-    private fun decodeReady() {
+    private fun decodeReady(): Boolean {
+        var decoded = false
         while (recognizer.isReady(stream)) {
             recognizer.decode(stream)
+            decoded = true
         }
+        return decoded
     }
+}
+
+internal fun recognizerThreadCount(availableProcessors: Int): Int =
+    availableProcessors.coerceIn(1, 4)
+
+internal fun pcm16ToFloat(
+    samples: ShortArray,
+    count: Int,
+    reusable: FloatArray,
+): FloatArray {
+    require(count in 0..samples.size) {
+        "PCM sample count $count exceeds buffer ${samples.size}."
+    }
+    val target = if (reusable.size == count) reusable else FloatArray(count)
+    for (index in 0 until count) {
+        target[index] = samples[index] / 32_768.0f
+    }
+    return target
 }

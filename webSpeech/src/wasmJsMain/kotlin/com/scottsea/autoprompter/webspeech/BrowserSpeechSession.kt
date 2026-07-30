@@ -38,13 +38,14 @@ internal class BrowserSpeechSession(
     override val id: SpeechSessionId,
     private val engine: SpeechRecognitionEngine,
     private val language: String,
+    private val processLocally: Boolean,
 ) : SpeechSession {
     private val lifecycle = SpeechSessionLifecycle()
 
     private val sink =
         MutableSharedFlow<SpeechEvent>(
             replay = REPLAY,
-            extraBufferCapacity = REPLAY,
+            extraBufferCapacity = 0,
             onBufferOverflow = BufferOverflow.DROP_OLDEST,
         )
 
@@ -65,6 +66,7 @@ internal class BrowserSpeechSession(
             continuous = true,
             interimResults = true,
             maxAlternatives = 1,
+            processLocally = processLocally,
         )
         engine.onStart = {
             if (!terminalFailure && !recognitionEnded) emit(SpeechEvent.Listening)
@@ -166,6 +168,8 @@ internal class BrowserSpeechSession(
     }
 
     private companion object {
-        const val REPLAY = 128
+        // The UI subscribes before start. Keep only the newest states so revised partials cannot
+        // queue behind stale hypotheses and amplify provider latency.
+        const val REPLAY = 2
     }
 }

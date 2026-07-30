@@ -356,11 +356,11 @@ fun TracerScreen(
             }
         }
 
-        PromptPreferencesSection(
-            preferences = promptPreferences,
-            loaded = preferencesLoaded,
-            failure = preferencesFailure,
-            onChange = ::updatePromptPreferences,
+        LiveSpeechSection(
+            model = model,
+            controls = liveSpeechControls,
+            premiumAllowed = speechPremiumAllowed,
+            premiumTestingEnabled = premiumTestingEnabled,
         )
 
         if (showDeveloperTools) {
@@ -387,26 +387,26 @@ fun TracerScreen(
             }
         }
 
-        PermanentUnlockSection(
-            state = entitlementState,
-            gateway = billingGateway,
-            commerceUnavailableMessage = commerceUnavailableMessage,
-        )
-
-        LiveSpeechSection(
-            model = model,
-            controls = liveSpeechControls,
-            premiumAllowed = speechPremiumAllowed,
-            premiumTestingEnabled = premiumTestingEnabled,
-        )
-
-        DiagnosticEditorSection(
-            model = model,
-            updateModel = updateModel,
-            store = store,
-            scope = scope,
-            onStoreFailure = onStoreFailure,
-        )
+        if (workspaceToolsVisible(model.live.phase)) {
+            PromptPreferencesSection(
+                preferences = promptPreferences,
+                loaded = preferencesLoaded,
+                failure = preferencesFailure,
+                onChange = ::updatePromptPreferences,
+            )
+            PermanentUnlockSection(
+                state = entitlementState,
+                gateway = billingGateway,
+                commerceUnavailableMessage = commerceUnavailableMessage,
+            )
+            DiagnosticEditorSection(
+                model = model,
+                updateModel = updateModel,
+                store = store,
+                scope = scope,
+                onStoreFailure = onStoreFailure,
+            )
+        }
     }
 }
 
@@ -596,7 +596,7 @@ private fun rememberLiveSpeechControls(
                 return@LiveSpeechControls
             }
             installJob =
-                scope.launch {
+                scope.launch(start = CoroutineStart.UNDISPATCHED) {
                     try {
                         provisioner.install()
                     } finally {
@@ -686,9 +686,10 @@ private fun SpeechProvisioningSection(
 ) {
     Text(provisioningStatus(state), style = MaterialTheme.typography.bodySmall)
     if (state is SpeechProvisioningState.Downloading) {
+        val totalBytes = requireNotNull(state.model.downloadBytes)
         LinearProgressIndicator(
             progress = {
-                state.downloadedBytes.toFloat() / state.model.downloadBytes.toFloat()
+                state.downloadedBytes.toFloat() / totalBytes.toFloat()
             },
             modifier = Modifier.fillMaxWidth(),
         )
@@ -715,10 +716,14 @@ internal fun provisioningStatus(state: SpeechProvisioningState): String =
     when (state) {
         is SpeechProvisioningState.Checking -> "Offline model: checking local files."
         is SpeechProvisioningState.Missing ->
-            "Offline model: not installed (${byteLabel(state.model.downloadBytes)} download)."
+            state.model.downloadBytes?.let { bytes ->
+                "Offline model: not installed (${byteLabel(bytes)} download)."
+            } ?: "Offline model: browser language pack not installed."
         is SpeechProvisioningState.Downloading ->
             "Offline model: downloading ${state.currentFile} — " +
-                "${byteLabel(state.downloadedBytes)} / ${byteLabel(state.model.downloadBytes)}."
+                "${byteLabel(state.downloadedBytes)} / " +
+                "${byteLabel(requireNotNull(state.model.downloadBytes))}."
+        is SpeechProvisioningState.Installing -> "Offline model: installing browser language pack."
         is SpeechProvisioningState.Verifying -> "Offline model: verifying checksums."
         is SpeechProvisioningState.Ready -> "Offline model: installed and verified."
         is SpeechProvisioningState.Paused ->
@@ -737,6 +742,7 @@ private fun provisioningErrorLabel(error: SpeechProvisioningError): String =
             "verification failed${error.fileName?.let { " for $it" } ?: ""}: ${error.detail}"
         is SpeechProvisioningError.Promotion -> "install failed: ${error.detail}"
         is SpeechProvisioningError.Storage -> "storage failed: ${error.detail}"
+        is SpeechProvisioningError.Unavailable -> error.detail
     }
 
 private fun byteLabel(bytes: Long): String {
@@ -751,6 +757,9 @@ internal fun speechFollowingAllowed(
     premiumTestingEnabled ||
         entitlementState == null ||
         ProductCapability.OfflineSpeechFollowing in capabilitiesFor(entitlementState)
+
+internal fun workspaceToolsVisible(phase: LiveSpeechPhase): Boolean =
+    phase != LiveSpeechPhase.Starting && phase != LiveSpeechPhase.Listening
 
 /** A concise, honest one-line summary of what the injected runtime can do. */
 internal fun capabilitySummary(

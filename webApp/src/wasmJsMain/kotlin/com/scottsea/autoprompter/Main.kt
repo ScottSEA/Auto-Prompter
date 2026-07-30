@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.ComposeViewport
 import com.scottsea.autoprompter.ui.TracerApp
 import com.scottsea.autoprompter.webspeech.browserLiveSpeechRuntime
+import com.scottsea.autoprompter.webspeech.browserSpeechModelProvisioner
 import com.scottsea.autoprompter.webstore.IndexedDbDocumentStore
 import com.scottsea.autoprompter.webstore.openIndexedDbDocumentStore
 import kotlinx.browser.document
@@ -47,8 +48,19 @@ fun main() {
     // then webkitSpeechRecognition). On a browser without it, this returns an explicit unsupported
     // runtime; either way the tracer's live speech card degrades honestly. It owns its own mic and
     // is online / vendor-dependent -- see the README live speech section.
-    val speech = browserLiveSpeechRuntime()
+    val speechProvisioner = browserSpeechModelProvisioner()
+    val speech =
+        browserLiveSpeechRuntime(
+            localReady = { speechProvisioner?.localReady == true },
+            onLocalUnavailable = { errorCode ->
+                speechProvisioner?.markLocalUnavailable(errorCode)
+            },
+        )
     val promptPreferencesStore = WebPromptPreferencesStore()
+
+    bootstrapScope.launch {
+        speechProvisioner?.refresh()
+    }
 
     bootstrapScope.launch {
         try {
@@ -70,6 +82,7 @@ fun main() {
             is BootstrapState.Ready -> TracerApp(
                 store = current.store,
                 speech = speech,
+                speechProvisioner = speechProvisioner,
                 preferencesStore = promptPreferencesStore,
                 commerceUnavailableMessage =
                     "Premium Android features use one permanent unlock. " +

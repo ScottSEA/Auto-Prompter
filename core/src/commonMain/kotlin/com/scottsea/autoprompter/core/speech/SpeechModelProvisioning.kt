@@ -7,13 +7,15 @@ data class SpeechModelDescriptor(
     val id: String,
     val displayName: String,
     val language: String,
-    val downloadBytes: Long,
+    val downloadBytes: Long?,
 ) {
     init {
         require(id.isNotBlank()) { "Speech model id must not be blank." }
         require(displayName.isNotBlank()) { "Speech model display name must not be blank." }
         require(language.isNotBlank()) { "Speech model language must not be blank." }
-        require(downloadBytes > 0L) { "Speech model download size must be positive." }
+        require(downloadBytes == null || downloadBytes > 0L) {
+            "Speech model download size must be positive when known."
+        }
     }
 }
 
@@ -27,6 +29,7 @@ sealed interface SpeechProvisioningError {
     data class Verification(val fileName: String?, val detail: String) : SpeechProvisioningError
     data class Promotion(val detail: String) : SpeechProvisioningError
     data class Storage(val detail: String) : SpeechProvisioningError
+    data class Unavailable(val detail: String) : SpeechProvisioningError
 }
 
 /** Observable state of an optional on-device speech model pack. */
@@ -46,12 +49,16 @@ sealed interface SpeechProvisioningState {
         val currentFile: String,
     ) : SpeechProvisioningState {
         init {
-            require(downloadedBytes in 0L..model.downloadBytes) {
+            val total = requireNotNull(model.downloadBytes) {
+                "Byte progress requires a model with a known download size."
+            }
+            require(downloadedBytes in 0L..total) {
                 "Downloaded bytes must stay within the model size."
             }
         }
     }
 
+    data class Installing(override val model: SpeechModelDescriptor) : SpeechProvisioningState
     data class Verifying(override val model: SpeechModelDescriptor) : SpeechProvisioningState
     data class Ready(override val model: SpeechModelDescriptor) : SpeechProvisioningState
 

@@ -11,6 +11,8 @@ import com.scottsea.autoprompter.core.speech.SpeechEvent
 import com.scottsea.autoprompter.core.speech.SpeechSession
 import com.scottsea.autoprompter.core.speech.SpeechSessionPlan
 import com.scottsea.autoprompter.core.speech.UtteranceId
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlin.test.Test
@@ -28,6 +30,28 @@ class BrowserSpeechSessionTest {
         events.filterIsInstance<SpeechEvent.Hypothesis>()
 
     @Test
+    fun lateCollectorReceivesOnlyNewestPartialStatesAfterBurst() = webSpeechTest {
+        val engine = FakeSpeechRecognitionEngine()
+        val session = openSession(engine)
+        session.start()
+        engine.driveStart()
+        repeat(10) { index ->
+            engine.driveResult(
+                resultIndex = 0,
+                items = listOf(resultItem(0, "partial $index", isFinal = false)),
+            )
+        }
+
+        val replayed = session.events.take(2).toList()
+
+        assertEquals(
+            listOf("partial 8", "partial 9"),
+            hypotheses(replayed).map { it.value.rawTranscript },
+        )
+        session.close()
+    }
+
+    @Test
     fun configureAppliesContinuousInterimSingleAlternativeAndLanguage() = webSpeechTest {
         val engine = FakeSpeechRecognitionEngine()
         openSession(engine, language = "en-GB")
@@ -37,6 +61,23 @@ class BrowserSpeechSessionTest {
         assertEquals(true, engine.lastContinuous)
         assertEquals(true, engine.lastInterim)
         assertEquals(1, engine.lastMaxAlternatives)
+        assertEquals(false, engine.lastProcessLocally)
+    }
+
+    @Test
+    fun locallyReadyRuntimeConfiguresOnDeviceRecognition() = webSpeechTest {
+        val engine = FakeSpeechRecognitionEngine()
+        val runtime =
+            browserLiveSpeechRuntimeForTest(
+                engineFactory = { engine },
+                localReady = { true },
+            )
+
+        val session = runtime.open(SpeechSessionPlan(LanguageTag("en-US")))
+
+        assertTrue(runtime.capabilities.offlineGuaranteed)
+        assertEquals(true, engine.lastProcessLocally)
+        session.close()
     }
 
     @Test
@@ -66,7 +107,9 @@ class BrowserSpeechSessionTest {
         engine.driveStart()
 
         engine.driveResult(resultIndex = 0, items = listOf(resultItem(0, "hel", isFinal = false)))
+        runCurrent()
         engine.driveResult(resultIndex = 0, items = listOf(resultItem(0, "hello", isFinal = false)))
+        runCurrent()
         engine.driveResult(resultIndex = 0, items = listOf(resultItem(0, "hello there", isFinal = true)))
         runCurrent()
 
@@ -175,8 +218,11 @@ class BrowserSpeechSessionTest {
         engine.driveStart()
 
         engine.driveResult(resultIndex = 0, items = listOf(resultItem(0, "a", isFinal = true, confidence = 0.87)))
+        runCurrent()
         engine.driveResult(resultIndex = 1, items = listOf(resultItem(1, "b", isFinal = true, confidence = Double.NaN)))
+        runCurrent()
         engine.driveResult(resultIndex = 2, items = listOf(resultItem(2, "c", isFinal = true, confidence = 2.0)))
+        runCurrent()
         engine.driveResult(resultIndex = 3, items = listOf(resultItem(3, "d", isFinal = true, confidence = null)))
         runCurrent()
 

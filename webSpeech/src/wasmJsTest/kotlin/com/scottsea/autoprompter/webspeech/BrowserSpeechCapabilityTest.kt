@@ -85,4 +85,10 @@ class BrowserSpeechCapabilityTest {
             assertNotNull(capability.unsupportedReason)
         }
     }
+
+    @Test
+    fun currentChromiumExposesOnDeviceSpeechPackApis() {
+        assertTrue(hasOnDeviceSpeechApi())
+        assertNotNull(browserSpeechModelProvisioner())
+    }
 }

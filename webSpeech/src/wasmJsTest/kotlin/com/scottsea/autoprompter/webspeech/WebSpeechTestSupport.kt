@@ -31,8 +31,11 @@ internal class FakeSpeechRecognitionEngine : SpeechRecognitionEngine {
         private set
     var lastMaxAlternatives: Int? = null
         private set
+    var lastProcessLocally: Boolean? = null
+        private set
     var startCalls = 0
         private set
+    var startFailure: Throwable? = null
     var stopCalls = 0
         private set
     var abortCalls = 0
@@ -40,16 +43,24 @@ internal class FakeSpeechRecognitionEngine : SpeechRecognitionEngine {
     var detachCalls = 0
         private set
 
-    override fun configure(language: String, continuous: Boolean, interimResults: Boolean, maxAlternatives: Int) {
+    override fun configure(
+        language: String,
+        continuous: Boolean,
+        interimResults: Boolean,
+        maxAlternatives: Int,
+        processLocally: Boolean,
+    ) {
         configureCalls += 1
         lastLanguage = language
         lastContinuous = continuous
         lastInterim = interimResults
         lastMaxAlternatives = maxAlternatives
+        lastProcessLocally = processLocally
     }
 
     override fun start() {
         startCalls += 1
+        startFailure?.let { throw it }
     }
 
     override fun stop() {
@@ -95,8 +106,8 @@ internal fun resultItem(
 
 /**
  * Collects a session's hot event flow into a live list on the test scheduler. Because the session's
- * sink replays, the collector sees every event emitted before it subscribed too. Call [runCurrent]
- * (via the returned scope) after driving the engine, then read [events].
+ * sink retains only its newest bounded states for late collectors. Call [runCurrent] (via the
+ * returned scope) after driving the engine, then read [events].
  */
 internal class SessionEventCollector(scope: CoroutineScope, session: SpeechSession) {
     val events: MutableList<SpeechEvent> = mutableListOf()

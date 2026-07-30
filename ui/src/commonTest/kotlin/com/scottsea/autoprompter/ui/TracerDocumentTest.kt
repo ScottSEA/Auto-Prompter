@@ -27,13 +27,12 @@ class TracerDocumentTest {
     }
 
     @Test
-    fun scenarioSelectionStartsPromptingFromConvertedScript() {
+    fun productionDefaultStartsConvertedScriptBeforeSpeech() {
         val model = scenario(0)
 
         // The session's script is exactly the document's converted Script.
         assertEquals(model.document.toScript(), model.session.script)
-        // First simulated hypothesis "hello world" advances two committed tokens.
-        assertEquals(2, model.session.follow.committedTokens)
+        assertEquals(0, model.session.follow.committedTokens)
         assertEquals(FollowMode.Following, model.session.mode)
     }
 

@@ -22,9 +22,17 @@ import com.scottsea.autoprompter.core.speech.SpeechSessionPlan
  * [engineFactory] so tests drive a fake engine (no microphone, no permission prompt).
  */
 class BrowserLiveSpeechRuntime internal constructor(
-    override val capabilities: SpeechCapability,
-    private val engineFactory: (() -> SpeechRecognitionEngine)?,
+    private val baseCapability: SpeechCapability,
+    private val engineFactory: ((Boolean) -> SpeechRecognitionEngine)?,
+    private val localReady: () -> Boolean,
 ) : LiveSpeechRuntime {
+    override val capabilities: SpeechCapability
+        get() =
+            if (baseCapability.supported && localReady()) {
+                baseCapability.copy(offlineGuaranteed = true)
+            } else {
+                baseCapability
+            }
 
     override suspend fun open(plan: SpeechSessionPlan): SpeechSession {
         val factory =
@@ -36,7 +44,13 @@ class BrowserLiveSpeechRuntime internal constructor(
                             "${capabilities.unsupportedReason}. Cannot open a speech session.",
                 )
         val id = SpeechSessionId("browser-speech-${nextSessionSerial()}")
-        return BrowserSpeechSession(id = id, engine = factory(), language = plan.language.value)
+        val processLocally = localReady()
+        return BrowserSpeechSession(
+            id = id,
+            engine = factory(processLocally),
+            language = plan.language.value,
+            processLocally = processLocally,
+        )
     }
 
     private companion object {
@@ -71,17 +85,33 @@ internal const val BROWSER_UNSUPPORTED_REASON: String =
  * explicitly unsupported and [BrowserLiveSpeechRuntime.open] fails. Detection only reads the presence
  * of the constructor; it never instantiates a recognizer and never requests microphone permission.
  */
-fun browserLiveSpeechRuntime(): BrowserLiveSpeechRuntime {
+fun browserLiveSpeechRuntime(
+    localReady: () -> Boolean = { false },
+    onLocalUnavailable: (String) -> Unit = {},
+): BrowserLiveSpeechRuntime {
     val supported = hasStandardSpeechRecognition() || hasWebkitSpeechRecognition()
     return if (supported) {
         BrowserLiveSpeechRuntime(
-            capabilities = BROWSER_SUPPORTED_CAPABILITY,
-            engineFactory = { RealSpeechRecognitionEngine(createSpeechRecognition()) },
+            baseCapability = BROWSER_SUPPORTED_CAPABILITY,
+            engineFactory = { processLocally ->
+                if (processLocally) {
+                    LocalFirstSpeechRecognitionEngine(
+                        engineFactory = {
+                            RealSpeechRecognitionEngine(createSpeechRecognition())
+                        },
+                        onLocalUnavailable = onLocalUnavailable,
+                    )
+                } else {
+                    RealSpeechRecognitionEngine(createSpeechRecognition())
+                }
+            },
+            localReady = localReady,
         )
     } else {
         BrowserLiveSpeechRuntime(
-            capabilities = SpeechCapability.unsupported(BROWSER_UNSUPPORTED_REASON),
+            baseCapability = SpeechCapability.unsupported(BROWSER_UNSUPPORTED_REASON),
             engineFactory = null,
+            localReady = { false },
         )
     }
 }
@@ -93,4 +123,10 @@ fun browserLiveSpeechRuntime(): BrowserLiveSpeechRuntime {
 internal fun browserLiveSpeechRuntimeForTest(
     capability: SpeechCapability = BROWSER_SUPPORTED_CAPABILITY,
     engineFactory: (() -> SpeechRecognitionEngine)?,
-): BrowserLiveSpeechRuntime = BrowserLiveSpeechRuntime(capability, engineFactory)
+    localReady: () -> Boolean = { false },
+): BrowserLiveSpeechRuntime =
+    BrowserLiveSpeechRuntime(
+        baseCapability = capability,
+        engineFactory = engineFactory?.let { factory -> { _ -> factory() } },
+        localReady = localReady,
+    )

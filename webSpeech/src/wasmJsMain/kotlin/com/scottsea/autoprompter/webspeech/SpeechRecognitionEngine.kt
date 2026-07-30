@@ -36,7 +36,13 @@ internal data class SpeechResultBatch(
  */
 internal interface SpeechRecognitionEngine {
     /** Applies recognition settings before [start]. */
-    fun configure(language: String, continuous: Boolean, interimResults: Boolean, maxAlternatives: Int)
+    fun configure(
+        language: String,
+        continuous: Boolean,
+        interimResults: Boolean,
+        maxAlternatives: Int,
+        processLocally: Boolean,
+    )
 
     /** Begins recognition. Invoked synchronously from the session's start so a user gesture is preserved. */
     fun start()
