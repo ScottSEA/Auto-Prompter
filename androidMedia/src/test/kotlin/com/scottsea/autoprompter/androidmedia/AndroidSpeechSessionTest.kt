@@ -10,6 +10,8 @@ import com.scottsea.autoprompter.core.speech.SpeechSessionId
 import com.scottsea.autoprompter.core.speech.UtteranceId
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -23,6 +25,28 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class AndroidSpeechSessionTest {
+    @Test
+    fun lateCollectorReceivesOnlyNewestPartialStatesAfterBurst() = speechTest {
+        val fixture = fixture()
+        fixture.session.start()
+        repeat(10) { index ->
+            fixture.engine.queue(RecognizerSnapshot("partial $index", isFinal = false))
+            fixture.source.push(shortArrayOf(index.toShort()))
+            runCurrent()
+        }
+
+        val replayed = fixture.session.events.take(2).toList()
+
+        assertEquals(
+            listOf("partial 8", "partial 9"),
+            replayed
+                .filterIsInstance<SpeechEvent.Hypothesis>()
+                .map { it.value.rawTranscript },
+        )
+        fixture.session.close()
+        runCurrent()
+    }
+
     @Test
     fun startEmitsStartingThenListening() = speechTest {
         val fixture = fixture()

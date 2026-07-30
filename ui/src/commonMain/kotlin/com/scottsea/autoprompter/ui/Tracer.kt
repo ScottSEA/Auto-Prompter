@@ -34,6 +34,11 @@ import com.scottsea.autoprompter.core.speech.LiveSpeechState
 import com.scottsea.autoprompter.core.speech.SpeechEvent
 import com.scottsea.autoprompter.core.speech.foldSpeechEvent
 
+enum class PromptDisplayMode {
+    Workspace,
+    Fullscreen,
+}
+
 /**
  * Immutable state for the diagnostic tracer screen.
  *
@@ -77,6 +82,7 @@ data class TracerModel(
     val editor: EditorState,
     val library: DocumentLibraryState,
     val live: LiveSpeechState,
+    val displayMode: PromptDisplayMode = PromptDisplayMode.Workspace,
 )
 
 /**
@@ -253,6 +259,14 @@ fun nudgeBackward(model: TracerModel): TracerModel = dispatch(model, PromptSessi
 
 /** Toggles between following speech and holding at the current anchor. */
 fun toggleFollow(model: TracerModel): TracerModel = dispatch(model, PromptSessionAction.ToggleFollow)
+
+/** Shows only the distance-readable prompt while preserving every live session state. */
+fun enterFullscreen(model: TracerModel): TracerModel =
+    model.copy(displayMode = PromptDisplayMode.Fullscreen)
+
+/** Restores the full workspace without changing prompt, speech, editor, or library state. */
+fun exitFullscreen(model: TracerModel): TracerModel =
+    model.copy(displayMode = PromptDisplayMode.Workspace)
 
 /** Enters manual hold without toggling an already-held session back into following. */
 fun holdPrompt(model: TracerModel): TracerModel =

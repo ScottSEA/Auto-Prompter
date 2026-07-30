@@ -70,7 +70,9 @@ private const val NEG = Int.MIN_VALUE / 4
 
 private class LocalScriptFollower(private val script: Script) : ScriptFollower {
 
-    private val tokens: List<String> = script.tokens.map { it.normalized }
+    // Script tokens are already normalized and immutable. Keep the parsed list instead of copying
+    // every token each time PromptSession folds a streaming partial.
+    private val tokens: List<ScriptToken> = script.tokens
     private val tokenCount: Int = tokens.size
 
     override fun follow(previous: FollowState, hypothesis: Hypothesis): FollowState {
@@ -141,7 +143,7 @@ private class LocalScriptFollower(private val script: Script) : ScriptFollower {
             for (j in 0 until width) {
                 rowIsMatch[j] = false
                 val p = windowStart + j
-                val isMatch = tokens[p] == word
+                val isMatch = tokens[p].normalized == word
 
                 if (isMatch) {
                     // Fresh chain starting here.

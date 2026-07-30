@@ -84,7 +84,7 @@ manual hold, resume, nudges, toggle, reset, and seek-bounds enforcement, 21 docu
 covering construction/validation, plain-text import, JSON round trip and error handling, and
 document-to-script conversion, 21 document-editor tests (see below), 10 `DocumentStore` contract
 tests, 16 document-library reducer tests (both see below), and 40 live-speech
-capability/identity/error/lifecycle/fold tests. 46 shared UI-model tests
+capability/identity/error/lifecycle/fold tests. 52 shared UI-model tests
 in `:ui:jvmTest` pin the Reset button's reducer wiring, that scenario selection carries the
 expected document identity/title and starts prompting from the document's converted `Script`,
 the diagnostic editor flow (editing marks the draft dirty, applying a valid draft restarts
@@ -94,7 +94,8 @@ clean, a second save advances to generation 2, a stale save conflicts and leaves
 dirty with a typed store conflict, delete removes the entry, and loading a saved entry restarts
 the editor and prompt under a fresh session. Eight of those UI-model tests cover live lifecycle,
 partial/revised hypotheses, session restarts, manual hold, termination, and typed failures.
-Three more pin model-provisioning status text for missing, paused, and low-storage states.
+Four more pin model-provisioning and recovery text for missing, paused, low-storage, and unsupported
+runtime states.
 
 ## Prompt viewport and hardware controls
 
@@ -108,7 +109,12 @@ Touch/wheel scrolling immediately enters `ManualHold` and relayout never re-snap
 Arrow and Page keys map to previous/next, Space or Enter toggles follow, and Home restarts.
 Presentation-remote and keyboard adapters emit the same platform-free `PromptRemoteCommand`s;
 auto-repeat is consumed so a held key cannot repeatedly toggle or restart. Follow motion completes
-in 220 ms and becomes instant when the platform requests reduced motion.
+in 90 ms and becomes instant when the platform requests reduced motion.
+
+`Fullscreen` switches to an edge-to-edge Stage Black reading surface containing only the prompt and
+one safe-area-aware `Exit fullscreen` control in the lower-right. The live recognizer is owned above
+that visual switch, so entering fullscreen never closes the microphone or stops hypotheses; prompt
+position, manual hold, keyboard, and presentation-remote behavior continue unchanged.
 
 `PRODUCT.md` and `DESIGN.md` define the focused, calm, professional product direction and the
 "Quiet Stage" visual system. Developer scenario and simulated-transcript controls are hidden by
@@ -148,6 +154,9 @@ client-side tamper evidence, **not equivalent to backend Play Developer API veri
 service-account or publisher credentials are embedded. Real product query, checkout, pending
 completion, refund/revocation, and license-tester flows remain Play Console/device gated. Web
 offers no checkout and states that purchase/restore occur in the Android app.
+Debuggable Android builds enable premium capability testing without fabricating or caching purchase
+ownership, so a sideloaded development APK can install the offline model and exercise speech/video
+paths. Non-debuggable release builds retain the permanent-unlock policy unchanged.
 
 ## Google Drive App Data sync protocol
 
@@ -633,7 +642,8 @@ The model is **not bundled in the APK**. The only model network traffic is a use
 from the revision-pinned public Hugging Face source; scripts and recordings are never uploaded. A
 verified pack enables the streaming/offline/microphone-owning runtime. `RECORD_AUDIO` is requested
 only when the user presses *Start listening*, and denial remains a typed `NotAllowed` error that can
-be retried in the same Activity.
+be retried in the same Activity. When setup is incomplete, the UI now shows the runtime's concrete
+recovery reason instead of replacing it with a generic “unavailable” message.
 
 Capture uses 16 kHz mono PCM16 in 20 ms chunks for this speech-only tracer. A dedicated single-thread
 dispatcher confines AudioRecord start/read/release and sherpa JNI use; endpoint results finalize an
@@ -642,10 +652,11 @@ result, and synchronous close waits for microphone/JNI teardown. When recording 
 runtime seam stays intact while capture moves to the architecture's single 48 kHz graph and feeds
 this recognizer through a tested resampler.
 
-Thirty-eight off-device `:androidMedia:testDebugUnitTest` tests cover model metadata/verification,
+Forty-four off-device `:androidMedia:testDebugUnitTest` tests cover model metadata/verification,
 partial and endpoint revision mapping, typed permission/audio/language errors, stop/close failures,
 synchronous cleanup, distinct sessions, capability honesty, resume/range fallback, cancellation
-before and after response headers, storage preflight, corruption rejection, and promotion rollback
+before and after response headers, storage preflight, corruption rejection, promotion rollback,
+bounded partial-event replay, recording-journal recovery, PCM fan-out, and the CameraX surface seam
 without loading JNI or requesting a microphone. The Android APK compiles and lints against the real AAR; the two-ABI debug APK is about
 82 MB before model files. **No Android device is connected**, so real microphone recognition,
 latency, accuracy, thermal behavior, and OEM teardown behavior remain unverified and are not claimed
@@ -659,9 +670,21 @@ buttons, current status, typed errors, and the latest transcript when present.
 *Start* enters an undispatched click-scoped coroutine so browser user activation reaches the
 synchronous adapter `start()` call; session events are collected in a composition-owned coroutine and folded
 with the pure `foldSpeechEvent` helper (never a stale snapshot). The session is closed on disposal,
-which aborts active recognition and releases the microphone with no leaked callbacks. Live
-hypotheses drive the same prompt reducer and viewport as manual controls. Simulated transcript
-controls are available only when `showDeveloperTools` is explicitly enabled.
+which aborts active recognition and releases the microphone with no leaked callbacks. The session
+controller remains composed independently of the visible card, so fullscreen presentation does not
+dispose it. Live hypotheses drive the same prompt reducer and viewport as manual controls. Simulated
+transcript controls are available only when `showDeveloperTools` is explicitly enabled.
+
+### Speech-follow responsiveness
+
+Streaming updates are bounded end to end. The Android session retains only the newest two events for
+a late or temporarily slow collector, so stale partials cannot accumulate into seconds of catch-up.
+The follower reuses the script's normalized token list instead of copying the full script for every
+partial. The viewport caches the full prompt text and token offsets, then changes at most two style
+ranges (passed text and current word) rather than rebuilding one span per word. On the JVM replay
+harness used during this slice, a 20,000-word follower update dropped from about 597 microseconds to
+13 microseconds, and highlight reconstruction dropped from about 1,696 microseconds to 105
+microseconds. These are comparative host measurements, not claims about device ASR latency.
 
 ## Toolchain
 
@@ -698,7 +721,7 @@ APK assembly exports exactly one artifact named `AutoPrompter-v{version}.apk`. I
 active checkout root; worktree users can set the Gradle project property
 `autoPrompter.apkExportDir` (or environment variable
 `ORG_GRADLE_PROJECT_autoPrompter.apkExportDir`) to one stable canonical directory. The current
-artifact is `AutoPrompter-v1.0.2.apk`.
+artifact is `AutoPrompter-v1.1.0.apk`.
 
 ```bash
 # Shared core and UI-model behavior tests (fast, off-device)
@@ -729,7 +752,7 @@ artifact is `AutoPrompter-v1.0.2.apk`.
 # plus Android/Wasm compilation
 ./gradlew :driveSync:jvmTest :driveSync:compileAndroidMain :driveSync:compileKotlinWasmJs
 
-# Android debug APK -> configured export directory as AutoPrompter-v1.0.2.apk
+# Android debug APK -> configured export directory as AutoPrompter-v1.1.0.apk
 ./gradlew :androidApp:assembleDebug
 
 # Android lint (report -> androidApp/build/reports/lint-results-debug.html)

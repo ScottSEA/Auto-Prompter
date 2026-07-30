@@ -289,6 +289,8 @@ internal class AndroidSpeechSession(
         }
 
     private companion object {
-        const val EVENT_REPLAY = 128
+        // The UI subscribes before start. Retain only the newest states for late/temporarily slow
+        // collectors so stale partial hypotheses cannot create seconds of catch-up lag.
+        const val EVENT_REPLAY = 2
     }
 }

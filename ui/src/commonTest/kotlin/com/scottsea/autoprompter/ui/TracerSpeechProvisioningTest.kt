@@ -1,6 +1,7 @@
 package com.scottsea.autoprompter.ui
 
 import com.scottsea.autoprompter.core.speech.SpeechModelDescriptor
+import com.scottsea.autoprompter.core.speech.SpeechCapability
 import com.scottsea.autoprompter.core.speech.SpeechProvisioningError
 import com.scottsea.autoprompter.core.speech.SpeechProvisioningState
 import kotlin.test.Test
@@ -14,6 +15,24 @@ class TracerSpeechProvisioningTest {
             language = "en",
             downloadBytes = 45L * 1024L * 1024L,
         )
+
+    @Test
+    fun unavailableRuntimeExplainsTheRecoveryInsteadOfHidingIt() {
+        val capability =
+            SpeechCapability.unsupported(
+                "Install and verify the offline English model to enable speech following.",
+            )
+
+        assertEquals(
+            "Speech following unavailable: " +
+                "Install and verify the offline English model to enable speech following.",
+            capabilitySummary(capability, premiumAllowed = true),
+        )
+        assertEquals(
+            "Unlock permanently to enable offline speech following.",
+            capabilitySummary(capability, premiumAllowed = false),
+        )
+    }
 
     @Test
     fun missingStateExplainsDownloadSize() {

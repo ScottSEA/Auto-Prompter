@@ -209,6 +209,9 @@ heavy shadow.
 - Stage Black background, Stage White current/ahead copy, and Passed Copy for completed text.
 - The reading horizon stays around 40% from the top. Follow scrolling moves only outside a dead band.
 - Touch or hardware navigation enters Manual Hold immediately; resuming never jumps backward.
+- Fullscreen expands Stage Black edge-to-edge and removes every workspace element except the prompt
+  and one outlined, 48dp `Exit fullscreen` control in the lower-right safe area.
+- Speech following and hardware controls remain active when the workspace chrome is hidden.
 
 ## 6. Do's and Don'ts
 

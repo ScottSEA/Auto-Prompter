@@ -8,8 +8,26 @@ import com.scottsea.autoprompter.core.entitlement.OwnershipRefreshState
 import com.scottsea.autoprompter.core.entitlement.StorePurchase
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class PermanentUnlockUiTest {
+    @Test
+    fun freeReleaseRemainsPaywalledWhileDebugTestingCanProvisionSpeech() {
+        assertFalse(
+            speechFollowingAllowed(
+                entitlementState = PermanentEntitlementState.INITIAL,
+                premiumTestingEnabled = false,
+            ),
+        )
+        assertTrue(
+            speechFollowingAllowed(
+                entitlementState = PermanentEntitlementState.INITIAL,
+                premiumTestingEnabled = true,
+            ),
+        )
+    }
+
     @Test
     fun cachedPermanentUnlockIsExplainedAsOfflineOwnership() {
         val state =

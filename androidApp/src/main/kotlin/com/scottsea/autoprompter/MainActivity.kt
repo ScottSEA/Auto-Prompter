@@ -1,6 +1,7 @@
 package com.scottsea.autoprompter
 
 import android.Manifest
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.result.ActivityResultLauncher
@@ -95,6 +96,8 @@ class MainActivity : ComponentActivity() {
                 entitlementState = entitlement,
                 billingGateway = billingGateway,
                 preferencesStore = promptPreferencesStore,
+                premiumTestingEnabled =
+                    applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0,
             )
         }
 

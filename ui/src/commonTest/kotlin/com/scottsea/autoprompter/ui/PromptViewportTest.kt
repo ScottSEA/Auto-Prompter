@@ -7,6 +7,11 @@ import kotlin.test.assertFailsWith
 
 class PromptViewportTest {
     @Test
+    fun speechScrollTransitionStaysBelowOneTenthSecond() {
+        assertEquals(90, SPEECH_SCROLL_DURATION_MILLIS)
+    }
+
+    @Test
     fun characterOffsetTracksTokenStartsAndScriptEnd() {
         val script = parseScript("one two three")
 
@@ -14,6 +19,31 @@ class PromptViewportTest {
         assertEquals(4, promptCharacterOffset(script, 1))
         assertEquals(8, promptCharacterOffset(script, 2))
         assertEquals(12, promptCharacterOffset(script, 3))
+    }
+
+    @Test
+    fun promptHighlightUsesCachedTextAndAtMostTwoDynamicRanges() {
+        val model = promptTextModel(parseScript("one two three"))
+
+        val highlighted = promptAnnotatedText(model, committedTokens = 1)
+
+        assertEquals("one two three", highlighted.text)
+        assertEquals(2, highlighted.spanStyles.size)
+        assertEquals(0, highlighted.spanStyles[0].start)
+        assertEquals(4, highlighted.spanStyles[0].end)
+        assertEquals(4, highlighted.spanStyles[1].start)
+        assertEquals(7, highlighted.spanStyles[1].end)
+    }
+
+    @Test
+    fun completedPromptMarksTheEntireTextPassed() {
+        val model = promptTextModel(parseScript("one two"))
+
+        val highlighted = promptAnnotatedText(model, committedTokens = 2)
+
+        assertEquals(1, highlighted.spanStyles.size)
+        assertEquals(0, highlighted.spanStyles.single().start)
+        assertEquals(highlighted.text.length, highlighted.spanStyles.single().end)
     }
 
     @Test

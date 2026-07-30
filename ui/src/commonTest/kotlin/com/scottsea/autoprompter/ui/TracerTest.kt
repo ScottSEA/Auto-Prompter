@@ -5,6 +5,19 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class TracerTest {
+    @Test
+    fun fullscreenModeChangesOnlyPresentationState() {
+        val initial = initialTracerModel()
+
+        val fullscreen = enterFullscreen(initial)
+        val restored = exitFullscreen(fullscreen)
+
+        assertEquals(PromptDisplayMode.Fullscreen, fullscreen.displayMode)
+        assertEquals(initial.session, fullscreen.session)
+        assertEquals(initial.document, fullscreen.document)
+        assertEquals(PromptDisplayMode.Workspace, restored.displayMode)
+        assertEquals(initial.session, restored.session)
+    }
 
     @Test
     fun resetDispatchesSessionResetWithoutReplayingSpeech() {

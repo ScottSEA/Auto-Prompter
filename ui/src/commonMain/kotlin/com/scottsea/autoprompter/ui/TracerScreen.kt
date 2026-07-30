@@ -1,16 +1,24 @@
 package com.scottsea.autoprompter.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -27,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -89,22 +98,24 @@ fun TracerApp(
     billingGateway: PermanentUnlockBillingGateway? = null,
     commerceUnavailableMessage: String? = null,
     preferencesStore: PromptPreferencesStore? = null,
+    premiumTestingEnabled: Boolean = false,
     showDeveloperTools: Boolean = false,
     onStoreFailure: (Throwable) -> Unit = { throw it },
 ) {
     AutoPrompterTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             TracerScreen(
-                store,
-                speech,
-                speechProvisioner,
-                onSpeechPermissionRequest,
-                entitlementState,
-                billingGateway,
-                commerceUnavailableMessage,
-                preferencesStore,
-                showDeveloperTools,
-                onStoreFailure,
+                store = store,
+                speech = speech,
+                speechProvisioner = speechProvisioner,
+                onSpeechPermissionRequest = onSpeechPermissionRequest,
+                entitlementState = entitlementState,
+                billingGateway = billingGateway,
+                commerceUnavailableMessage = commerceUnavailableMessage,
+                preferencesStore = preferencesStore,
+                premiumTestingEnabled = premiumTestingEnabled,
+                showDeveloperTools = showDeveloperTools,
+                onStoreFailure = onStoreFailure,
             )
         }
     }
@@ -121,6 +132,7 @@ fun TracerScreen(
     billingGateway: PermanentUnlockBillingGateway?,
     commerceUnavailableMessage: String?,
     preferencesStore: PromptPreferencesStore?,
+    premiumTestingEnabled: Boolean,
     showDeveloperTools: Boolean,
     onStoreFailure: (Throwable) -> Unit,
 ) {
@@ -144,7 +156,7 @@ fun TracerScreen(
         mutableStateOf<PromptPreferences?>(null)
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(model.displayMode) {
         rootFocusRequester.requestFocus()
     }
 
@@ -198,6 +210,20 @@ fun TracerScreen(
         rootFocusRequester.requestFocus()
     }
 
+    val remoteInputModifier =
+        Modifier
+            .focusRequester(rootFocusRequester)
+            .onFocusChanged { state ->
+                if (!state.hasFocus) remoteKeyState = RemoteKeyInputState()
+            }
+            .onKeyEvent { event ->
+                val result = reduceRemoteKeyInput(remoteKeyState, event.key, event.type)
+                remoteKeyState = result.state
+                result.command?.let(::runRemoteCommand)
+                result.consumed
+            }
+            .focusable()
+
     // Prime the library from the store's current live listing on first composition.
     LaunchedEffect(store) {
         try {
@@ -215,23 +241,35 @@ fun TracerScreen(
     val following = model.session.mode == FollowMode.Following
     val modeLabel = if (following) "Following speech" else "Manual hold"
     val speechPremiumAllowed =
-        entitlementState == null ||
-            ProductCapability.OfflineSpeechFollowing in capabilitiesFor(entitlementState)
+        speechFollowingAllowed(
+            entitlementState = entitlementState,
+            premiumTestingEnabled = premiumTestingEnabled,
+        )
+    val liveSpeechControls =
+        rememberLiveSpeechControls(
+            model = model,
+            updateModel = updateModel,
+            runtime = speech,
+            provisioner = speechProvisioner,
+            onPermissionRequest = onSpeechPermissionRequest,
+            premiumAllowed = speechPremiumAllowed,
+            scope = scope,
+        )
+
+    if (model.displayMode == PromptDisplayMode.Fullscreen) {
+        FullscreenPrompt(
+            model = model,
+            preferences = promptPreferences,
+            onUserScroll = { updateModel(::holdPrompt) },
+            onExit = { updateModel(::exitFullscreen) },
+            modifier = remoteInputModifier.fillMaxSize(),
+        )
+        return
+    }
 
     Column(
-        modifier = Modifier
+        modifier = remoteInputModifier
             .fillMaxSize()
-            .focusRequester(rootFocusRequester)
-            .onFocusChanged { state ->
-                if (!state.hasFocus) remoteKeyState = RemoteKeyInputState()
-            }
-            .onKeyEvent { event ->
-                val result = reduceRemoteKeyInput(remoteKeyState, event.key, event.type)
-                remoteKeyState = result.state
-                result.command?.let(::runRemoteCommand)
-                result.consumed
-            }
-            .focusable()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -313,6 +351,9 @@ fun TracerScreen(
                     runRemoteCommand(PromptRemoteCommand.Restart)
                 },
             ) { Text("Restart") }
+            OutlinedButton(onClick = { updateModel(::enterFullscreen) }) {
+                Text("Fullscreen")
+            }
         }
 
         PromptPreferencesSection(
@@ -354,13 +395,9 @@ fun TracerScreen(
 
         LiveSpeechSection(
             model = model,
-            updateModel = updateModel,
-            runtime = speech,
-            provisioner = speechProvisioner,
-            onPermissionRequest = onSpeechPermissionRequest,
+            controls = liveSpeechControls,
             premiumAllowed = speechPremiumAllowed,
-            showDeveloperTools = showDeveloperTools,
-            scope = scope,
+            premiumTestingEnabled = premiumTestingEnabled,
         )
 
         DiagnosticEditorSection(
@@ -373,30 +410,71 @@ fun TracerScreen(
     }
 }
 
-/**
- * Product-facing controls over the injected real [LiveSpeechRuntime].
- *
- * This is the only place the tracer touches a *real* recognizer. It renders the runtime's honest
- * [SpeechCapability], disables Start when unsupported, and otherwise opens a
- * [SpeechSession] and starts it undispatched inside the button callback so a browser can retain the
- * user gesture. Session events are collected in a composition-owned coroutine and folded into the
- * latest model via the pure [foldLiveSpeech]; hypotheses therefore drive the same prompt follower as
- * the same reducer as manual controls, while lifecycle/error events update the status shown here.
- * The session is stopped/closed on disposal and when it ends, so no
- * callbacks leak past the composition.
- */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LiveSpeechSection(
+private fun FullscreenPrompt(
+    model: TracerModel,
+    preferences: PromptPreferences,
+    onUserScroll: () -> Unit,
+    onExit: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier.background(AutoPrompterPalette.PromptBackground)) {
+        PromptViewport(
+            session = model.session,
+            preferences = preferences,
+            onUserScroll = onUserScroll,
+            fillAvailableSpace = true,
+            modifier = Modifier.fillMaxSize(),
+        )
+        OutlinedButton(
+            onClick = onExit,
+            modifier =
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .padding(16.dp)
+                    .heightIn(min = 48.dp),
+            border = BorderStroke(1.dp, AutoPrompterPalette.PromptPassed),
+            colors =
+                ButtonDefaults.outlinedButtonColors(
+                    containerColor = AutoPrompterPalette.PromptBackground,
+                    contentColor = AutoPrompterPalette.PromptInk,
+                ),
+        ) {
+            Text("Exit fullscreen")
+        }
+    }
+}
+
+private class LiveSpeechControls(
+    val capability: SpeechCapability,
+    val provisioningState: SpeechProvisioningState?,
+    val listening: Boolean,
+    val starting: Boolean,
+    val sessionActive: Boolean,
+    val installing: Boolean,
+    val start: () -> Unit,
+    val stop: () -> Unit,
+    val install: () -> Unit,
+    val pauseInstall: () -> Unit,
+)
+
+/**
+ * Owns the real recognizer independently from its visible controls.
+ *
+ * Keeping this state holder composed while the workspace is hidden lets fullscreen prompting
+ * continue receiving hypotheses instead of closing the microphone as a side effect of presentation.
+ */
+@Composable
+private fun rememberLiveSpeechControls(
     model: TracerModel,
     updateModel: ((TracerModel) -> TracerModel) -> Unit,
     runtime: LiveSpeechRuntime,
     provisioner: SpeechModelProvisioner?,
     onPermissionRequest: (suspend () -> Boolean)?,
     premiumAllowed: Boolean,
-    showDeveloperTools: Boolean,
     scope: CoroutineScope,
-) {
+): LiveSpeechControls {
     val capability = runtime.capabilities
     val provisioningState = provisioner?.state?.collectAsState()?.value
     var session by remember(runtime) { mutableStateOf<SpeechSession?>(null) }
@@ -457,48 +535,112 @@ private fun LiveSpeechSection(
         }
     }
 
+    return LiveSpeechControls(
+        capability = capability,
+        provisioningState = provisioningState,
+        listening = listening,
+        starting = starting,
+        sessionActive = session != null,
+        installing = installJob?.isActive == true,
+        start = {
+            if (!premiumAllowed || starting || session != null) return@LiveSpeechControls
+            starting = true
+            // UNDISPATCHED enters open/start before returning from this click callback.
+            // The browser adapter does not suspend there, preserving browser user activation.
+            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                var opened: SpeechSession? = null
+                try {
+                    if (onPermissionRequest?.invoke() == false) {
+                        updateModel { current ->
+                            foldLiveSpeech(
+                                current,
+                                SpeechEvent.Failed(SpeechError.NotAllowed),
+                            )
+                        }
+                        return@launch
+                    }
+                    opened = runtime.open(SpeechSessionPlan(LanguageTag(LIVE_SPEECH_LANGUAGE)))
+                    session = opened
+                    collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                        opened.events.collect { event ->
+                            updateModel { current -> foldLiveSpeech(current, event) }
+                        }
+                    }
+                    opened.start()
+                } catch (cancelled: CancellationException) {
+                    release(opened)
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    release(opened)
+                    reportSpeechFailure(failure)
+                } finally {
+                    starting = false
+                }
+            }
+        },
+        stop = {
+            val active = session ?: return@LiveSpeechControls
+            scope.launch {
+                try {
+                    active.stop()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    release(active)
+                    reportSpeechFailure(failure)
+                }
+            }
+        },
+        install = {
+            if (!premiumAllowed || provisioner == null || installJob?.isActive == true) {
+                return@LiveSpeechControls
+            }
+            installJob =
+                scope.launch {
+                    try {
+                        provisioner.install()
+                    } finally {
+                        installJob = null
+                    }
+                }
+        },
+        pauseInstall = {
+            installJob?.cancel()
+            installJob = null
+        },
+    )
+}
+
+/** Product-facing controls for the independently owned live speech session. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LiveSpeechSection(
+    model: TracerModel,
+    controls: LiveSpeechControls,
+    premiumAllowed: Boolean,
+    premiumTestingEnabled: Boolean,
+) {
     Card {
         Column(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text("Speech following", style = MaterialTheme.typography.labelLarge)
-            if (premiumAllowed && provisioner != null && provisioningState != null) {
+            if (premiumAllowed && controls.provisioningState != null) {
                 SpeechProvisioningSection(
-                    state = provisioningState,
-                    installing = installJob?.isActive == true,
-                    onInstall = {
-                        if (installJob?.isActive != true) {
-                            installJob =
-                                scope.launch {
-                                    try {
-                                        provisioner.install()
-                                    } finally {
-                                        installJob = null
-                                    }
-                                }
-                        }
-                    },
-                    onPause = {
-                        installJob?.cancel()
-                        installJob = null
-                    },
+                    state = controls.provisioningState,
+                    installing = controls.installing,
+                    onInstall = controls.install,
+                    onPause = controls.pauseInstall,
                 )
             }
-            Text(capabilitySummary(capability), style = MaterialTheme.typography.bodySmall)
-            if (!premiumAllowed) {
+            Text(
+                capabilitySummary(controls.capability, premiumAllowed),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (premiumTestingEnabled) {
                 Text(
-                    "Offline speech following is included with the permanent unlock.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (!capability.supported) {
-                Text(
-                    if (showDeveloperTools) {
-                        "Unavailable: ${capability.unsupportedReason}"
-                    } else {
-                        "Speech following is not available on this device or browser."
-                    },
+                    "Premium feature testing is enabled in this debug build.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -518,59 +660,16 @@ private fun LiveSpeechSection(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(
-                    enabled = premiumAllowed && capability.supported && !starting && session == null,
-                    onClick = {
-                        if (starting || session != null) return@Button
-                        starting = true
-                        // UNDISPATCHED enters open/start before returning from this click callback.
-                        // The browser adapter does not suspend there, preserving browser user activation.
-                        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                            var opened: SpeechSession? = null
-                            try {
-                                if (onPermissionRequest?.invoke() == false) {
-                                    updateModel { current ->
-                                        foldLiveSpeech(
-                                            current,
-                                            SpeechEvent.Failed(SpeechError.NotAllowed),
-                                        )
-                                    }
-                                    return@launch
-                                }
-                                opened = runtime.open(SpeechSessionPlan(LanguageTag(LIVE_SPEECH_LANGUAGE)))
-                                session = opened
-                                collector = launch(start = CoroutineStart.UNDISPATCHED) {
-                                    opened.events.collect { event ->
-                                        updateModel { current -> foldLiveSpeech(current, event) }
-                                    }
-                                }
-                                opened.start()
-                            } catch (cancelled: CancellationException) {
-                                release(opened)
-                                throw cancelled
-                            } catch (failure: Throwable) {
-                                release(opened)
-                                reportSpeechFailure(failure)
-                            } finally {
-                                starting = false
-                            }
-                        }
-                    },
+                    enabled =
+                        premiumAllowed &&
+                            controls.capability.supported &&
+                            !controls.starting &&
+                            !controls.sessionActive,
+                    onClick = controls.start,
                 ) { Text("Start listening") }
                 OutlinedButton(
-                    enabled = listening && session != null,
-                    onClick = {
-                        val active = session ?: return@OutlinedButton
-                        scope.launch {
-                            try {
-                                active.stop()
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (failure: Throwable) {
-                                release(active)
-                                reportSpeechFailure(failure)
-                            }
-                        }
-                    },
+                    enabled = controls.listening && controls.sessionActive,
+                    onClick = controls.stop,
                 ) { Text("Stop listening") }
             }
         }
@@ -645,9 +744,23 @@ private fun byteLabel(bytes: Long): String {
     return if (mebibytes > 0L) "$mebibytes MiB" else "$bytes bytes"
 }
 
+internal fun speechFollowingAllowed(
+    entitlementState: PermanentEntitlementState?,
+    premiumTestingEnabled: Boolean,
+): Boolean =
+    premiumTestingEnabled ||
+        entitlementState == null ||
+        ProductCapability.OfflineSpeechFollowing in capabilitiesFor(entitlementState)
+
 /** A concise, honest one-line summary of what the injected runtime can do. */
-private fun capabilitySummary(capability: SpeechCapability): String {
-    if (!capability.supported) return "Speech following is unavailable."
+internal fun capabilitySummary(
+    capability: SpeechCapability,
+    premiumAllowed: Boolean,
+): String {
+    if (!premiumAllowed) return "Unlock permanently to enable offline speech following."
+    if (!capability.supported) {
+        return "Speech following unavailable: ${capability.unsupportedReason}"
+    }
     return if (capability.offlineGuaranteed) {
         "Speech stays on this device."
     } else {

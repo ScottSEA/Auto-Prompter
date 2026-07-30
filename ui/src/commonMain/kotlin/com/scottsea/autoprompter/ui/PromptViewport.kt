@@ -25,7 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -39,7 +39,6 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.scottsea.autoprompter.core.FollowMode
@@ -53,6 +52,7 @@ import kotlin.coroutines.coroutineContext
 import kotlin.math.roundToInt
 
 private val PromptShape = RoundedCornerShape(20.dp)
+internal const val SPEECH_SCROLL_DURATION_MILLIS: Int = 90
 
 /** The product's distance-readable prompt surface, driven by committed token progress. */
 @Composable
@@ -60,6 +60,7 @@ internal fun PromptViewport(
     session: PromptSessionState,
     preferences: PromptPreferences,
     onUserScroll: () -> Unit,
+    fillAvailableSpace: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
@@ -84,8 +85,9 @@ internal fun PromptViewport(
         )
     val topSpace = with(density) { padding.topPx.toDp() }
     val bottomSpace = with(density) { padding.bottomPx.toDp() }
-    val promptText = remember(session.script, session.follow.committedTokens) {
-        promptAnnotatedText(session)
+    val textModel = remember(session.script) { promptTextModel(session.script) }
+    val promptText = remember(textModel, session.follow.committedTokens) {
+        promptAnnotatedText(textModel, session.follow.committedTokens)
     }
     val manualScrollConnection =
         remember(onUserScroll) {
@@ -111,7 +113,7 @@ internal fun PromptViewport(
         val layout = layoutResult ?: return@LaunchedEffect
         if (viewportHeightPx <= 0 || layout.lineCount == 0) return@LaunchedEffect
         val characterOffset =
-            promptCharacterOffset(session.script, session.follow.committedTokens)
+            textModel.characterOffset(session.follow.committedTokens)
                 .coerceIn(0, (layout.layoutInput.text.length - 1).coerceAtLeast(0))
         val line = layout.getLineForOffset(characterOffset)
         val anchorCenter =
@@ -138,7 +140,7 @@ internal fun PromptViewport(
                         decision.scrollPx,
                         animationSpec =
                             tween(
-                                durationMillis = 220,
+                                durationMillis = SPEECH_SCROLL_DURATION_MILLIS,
                                 easing = FastOutSlowInEasing,
                             ),
                     )
@@ -149,9 +151,11 @@ internal fun PromptViewport(
 
     Surface(
         modifier =
-            modifier
-                .fillMaxWidth()
-                .height(420.dp)
+            (if (fillAvailableSpace) {
+                modifier.fillMaxSize()
+            } else {
+                modifier.fillMaxWidth().height(420.dp)
+            })
                 .onSizeChanged { viewportHeightPx = it.height }
                 .semantics {
                     stateDescription =
@@ -161,7 +165,7 @@ internal fun PromptViewport(
                             "Manual hold"
                         }
                 },
-        shape = PromptShape,
+        shape = if (fillAvailableSpace) RectangleShape else PromptShape,
         color = AutoPrompterPalette.PromptBackground,
         contentColor = AutoPrompterPalette.PromptInk,
     ) {
@@ -200,6 +204,48 @@ internal data class PromptViewportPadding(
     val bottomPx: Float,
 )
 
+internal class PromptTextModel private constructor(
+    val text: String,
+    private val tokenStarts: IntArray,
+    private val tokenEnds: IntArray,
+) {
+    val tokenCount: Int get() = tokenStarts.size
+
+    fun characterOffset(committedTokens: Int): Int {
+        require(committedTokens in 0..tokenCount) {
+            "Committed token position $committedTokens must be within 0..$tokenCount."
+        }
+        if (text.isEmpty()) return 0
+        return if (committedTokens == tokenCount) text.lastIndex else tokenStarts[committedTokens]
+    }
+
+    fun tokenEnd(position: Int): Int {
+        require(position in 0 until tokenCount) {
+            "Token position $position must be within 0 until $tokenCount."
+        }
+        return tokenEnds[position]
+    }
+
+    companion object {
+        fun from(script: Script): PromptTextModel {
+            val starts = IntArray(script.tokenCount)
+            val ends = IntArray(script.tokenCount)
+            val text =
+                buildString {
+                    script.tokens.forEachIndexed { index, token ->
+                        if (index > 0) append(' ')
+                        starts[index] = length
+                        append(token.normalized)
+                        ends[index] = length
+                    }
+                }
+            return PromptTextModel(text, starts, ends)
+        }
+    }
+}
+
+internal fun promptTextModel(script: Script): PromptTextModel = PromptTextModel.from(script)
+
 /**
  * Derives symmetric reading runway around the horizon for any viewport and font scale.
  *
@@ -223,38 +269,40 @@ internal fun promptViewportPadding(
 
 /** Character offset of the token at [committedTokens], or the final character at script end. */
 internal fun promptCharacterOffset(script: Script, committedTokens: Int): Int {
-    require(committedTokens in 0..script.tokenCount) {
-        "Committed token position $committedTokens must be within 0..${script.tokenCount}."
-    }
-    if (script.tokens.isEmpty()) return 0
-    if (committedTokens == script.tokenCount) {
-        return script.tokens.sumOf { it.normalized.length } + script.tokenCount - 2
-    }
-    var offset = 0
-    for (index in 0 until committedTokens) {
-        offset += script.tokens[index].normalized.length + 1
-    }
-    return offset
+    return promptTextModel(script).characterOffset(committedTokens)
 }
 
-private fun promptAnnotatedText(session: PromptSessionState): AnnotatedString =
+internal fun promptAnnotatedText(
+    model: PromptTextModel,
+    committedTokens: Int,
+): AnnotatedString =
     buildAnnotatedString {
-        session.script.tokens.forEachIndexed { index, token ->
-            if (index > 0) append(" ")
-            val color: Color =
-                when {
-                    index < session.follow.committedTokens -> AutoPrompterPalette.PromptPassed
-                    index == session.follow.committedTokens -> AutoPrompterPalette.Primary
-                    else -> AutoPrompterPalette.PromptInk
-                }
-            val weight =
-                if (index == session.follow.committedTokens) {
-                    FontWeight.SemiBold
-                } else {
-                    FontWeight.Medium
-                }
-            withStyle(SpanStyle(color = color, fontWeight = weight)) {
-                append(token.normalized)
+        require(committedTokens in 0..model.tokenCount) {
+            "Committed token position $committedTokens must be within 0..${model.tokenCount}."
+        }
+        append(model.text)
+        val currentStart = model.characterOffset(committedTokens)
+        val passedEnd =
+            if (committedTokens == model.tokenCount) {
+                model.text.length
+            } else {
+                currentStart
             }
+        if (passedEnd > 0) {
+            addStyle(
+                SpanStyle(color = AutoPrompterPalette.PromptPassed),
+                start = 0,
+                end = passedEnd,
+            )
+        }
+        if (committedTokens < model.tokenCount) {
+            addStyle(
+                SpanStyle(
+                    color = AutoPrompterPalette.Primary,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                start = currentStart,
+                end = model.tokenEnd(committedTokens),
+            )
         }
     }
