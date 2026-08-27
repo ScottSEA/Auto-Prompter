@@ -3,11 +3,17 @@ package com.scottsea.autoprompter.core.settings
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.int
 
 data class PromptPreferences(
     val fontScale: Float,
     val readingHorizonFraction: Float,
     val mirrorHorizontally: Boolean,
+    val predictiveCursorEnabled: Boolean = false,
+    val focusStripEnabled: Boolean = false,
+    val phraseBiasEnabled: Boolean = false,
 ) {
     init {
         require(fontScale in 0.75f..2.0f) {
@@ -24,6 +30,9 @@ data class PromptPreferences(
                 fontScale = 1f,
                 readingHorizonFraction = 0.40f,
                 mirrorHorizontally = false,
+                predictiveCursorEnabled = false,
+                focusStripEnabled = false,
+                phraseBiasEnabled = false,
             )
     }
 }
@@ -51,29 +60,74 @@ private data class PromptPreferencesWireV1(
     val mirrorHorizontally: Boolean,
 )
 
+@Serializable
+private data class PromptPreferencesWireV2(
+    @SerialName("schemaVersion")
+    val schemaVersion: Int,
+    @SerialName("fontScale")
+    val fontScale: Float,
+    @SerialName("readingHorizonFraction")
+    val readingHorizonFraction: Float,
+    @SerialName("mirrorHorizontally")
+    val mirrorHorizontally: Boolean,
+    @SerialName("predictiveCursorEnabled")
+    val predictiveCursorEnabled: Boolean,
+    @SerialName("focusStripEnabled")
+    val focusStripEnabled: Boolean,
+    @SerialName("phraseBiasEnabled")
+    val phraseBiasEnabled: Boolean,
+)
+
 fun encodePromptPreferences(preferences: PromptPreferences): String =
     preferencesJson.encodeToString(
-        PromptPreferencesWireV1.serializer(),
-        PromptPreferencesWireV1(
-            schemaVersion = 1,
+        PromptPreferencesWireV2.serializer(),
+        PromptPreferencesWireV2(
+            schemaVersion = 2,
             fontScale = preferences.fontScale,
             readingHorizonFraction = preferences.readingHorizonFraction,
             mirrorHorizontally = preferences.mirrorHorizontally,
+            predictiveCursorEnabled = preferences.predictiveCursorEnabled,
+            focusStripEnabled = preferences.focusStripEnabled,
+            phraseBiasEnabled = preferences.phraseBiasEnabled,
         ),
     )
 
 fun decodePromptPreferences(encoded: String): PromptPreferences {
-    val wire =
-        preferencesJson.decodeFromString(
-            PromptPreferencesWireV1.serializer(),
-            encoded,
-        )
-    require(wire.schemaVersion == 1) {
-        "Unsupported prompt preferences schema ${wire.schemaVersion}."
+    val schemaVersion =
+        preferencesJson
+            .parseToJsonElement(encoded)
+            .jsonObject["schemaVersion"]
+            ?.jsonPrimitive
+            ?.int
+            ?: error("Prompt preferences schemaVersion is required.")
+    return when (schemaVersion) {
+        1 -> {
+            val wire =
+                preferencesJson.decodeFromString(
+                    PromptPreferencesWireV1.serializer(),
+                    encoded,
+                )
+            PromptPreferences(
+                fontScale = wire.fontScale,
+                readingHorizonFraction = wire.readingHorizonFraction,
+                mirrorHorizontally = wire.mirrorHorizontally,
+            )
+        }
+        2 -> {
+            val wire =
+                preferencesJson.decodeFromString(
+                    PromptPreferencesWireV2.serializer(),
+                    encoded,
+                )
+            PromptPreferences(
+                fontScale = wire.fontScale,
+                readingHorizonFraction = wire.readingHorizonFraction,
+                mirrorHorizontally = wire.mirrorHorizontally,
+                predictiveCursorEnabled = wire.predictiveCursorEnabled,
+                focusStripEnabled = wire.focusStripEnabled,
+                phraseBiasEnabled = wire.phraseBiasEnabled,
+            )
+        }
+        else -> error("Unsupported prompt preferences schema $schemaVersion.")
     }
-    return PromptPreferences(
-        fontScale = wire.fontScale,
-        readingHorizonFraction = wire.readingHorizonFraction,
-        mirrorHorizontally = wire.mirrorHorizontally,
-    )
 }

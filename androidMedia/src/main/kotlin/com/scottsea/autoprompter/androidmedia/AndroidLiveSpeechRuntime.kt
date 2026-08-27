@@ -24,6 +24,8 @@ class AndroidLiveSpeechRuntime internal constructor(
     private val engineFactory: (InstalledSpeechModel) -> StreamingRecognizerEngine = {
         SherpaOnlineRecognizerEngine(it)
     },
+    private val timelineFactory: () -> SpeechTimelineSink = { NoopSpeechTimelineSink },
+    private val metricsSink: SpeechMetricsSink = NoopSpeechMetricsSink,
 ) : LiveSpeechRuntime {
     override val capabilities: SpeechCapability =
         SpeechCapability.supported(
@@ -60,6 +62,8 @@ class AndroidLiveSpeechRuntime internal constructor(
             dispatcher = lease.dispatcher,
             scheduleCleanup = { cleanup -> lease.executor.execute(cleanup) },
             closeDispatcher = lease.dispatcher::close,
+            timeline = timelineFactory(),
+            metrics = metricsSink,
         )
     }
 
@@ -72,7 +76,10 @@ class AndroidLiveSpeechRuntime internal constructor(
         val serial = dispatcherSerial.incrementAndGet()
         val executor =
             Executors.newSingleThreadExecutor { runnable ->
-                Thread(runnable, "auto-prompter-speech-$serial").apply { isDaemon = true }
+                Thread({
+                    applyAudioCapturePriority()
+                    runnable.run()
+                }, "auto-prompter-speech-$serial").apply { isDaemon = true }
             }
         return DispatcherLease(executor, executor.asCoroutineDispatcher())
     }
@@ -103,10 +110,19 @@ class AndroidLiveSpeechRuntime internal constructor(
 fun createAndroidLiveSpeechRuntime(
     context: Context,
     pack: SpeechModelPack = ENGLISH_ZIPFORMER_20M,
+    provider: SherpaProvider = SherpaProvider.Cpu,
+    timelineFactory: () -> SpeechTimelineSink = { NoopSpeechTimelineSink },
+    metricsSink: SpeechMetricsSink = NoopSpeechMetricsSink,
 ): LiveSpeechRuntime {
     val root = File(File(context.filesDir, SPEECH_MODEL_DIRECTORY), pack.id)
     return when (val state = inspectInstalledSpeechModel(root, pack)) {
-        is InstalledSpeechModelState.Ready -> AndroidLiveSpeechRuntime(state.model)
+        is InstalledSpeechModelState.Ready ->
+            AndroidLiveSpeechRuntime(
+                model = state.model,
+                engineFactory = { SherpaOnlineRecognizerEngine(it, provider) },
+                timelineFactory = timelineFactory,
+                metricsSink = metricsSink,
+            )
         is InstalledSpeechModelState.Unavailable ->
             UnsupportedLiveSpeechRuntime(
                 "Offline English speech model is unavailable: ${state.detail} " +

@@ -25,6 +25,7 @@ class LocalFirstSpeechRecognitionEngineTest {
             interimResults = true,
             maxAlternatives = 1,
             processLocally = true,
+            phraseHints = listOf("hello world"),
         )
         engine.start()
 
@@ -33,6 +34,7 @@ class LocalFirstSpeechRecognitionEngineTest {
 
         assertEquals(1, local.detachCalls)
         assertEquals(false, provider.lastProcessLocally)
+        assertEquals(listOf("hello world"), provider.lastPhraseHints)
         assertEquals(1, provider.startCalls)
         assertEquals(listOf("language-not-supported"), localFailures)
         assertEquals(emptyList(), surfacedErrors)
@@ -56,7 +58,14 @@ class LocalFirstSpeechRecognitionEngineTest {
                 onLocalUnavailable = {},
             )
         engine.onError = surfacedErrors::add
-        engine.configure("en-US", true, true, 1, processLocally = true)
+        engine.configure(
+            "en-US",
+            true,
+            true,
+            1,
+            processLocally = true,
+            phraseHints = listOf("hello world"),
+        )
         engine.start()
 
         local.driveError("service-not-allowed")

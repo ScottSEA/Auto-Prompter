@@ -39,6 +39,7 @@ internal class BrowserSpeechSession(
     private val engine: SpeechRecognitionEngine,
     private val language: String,
     private val processLocally: Boolean,
+    private val phraseHints: List<String>,
 ) : SpeechSession {
     private val lifecycle = SpeechSessionLifecycle()
 
@@ -67,6 +68,7 @@ internal class BrowserSpeechSession(
             interimResults = true,
             maxAlternatives = 1,
             processLocally = processLocally,
+            phraseHints = phraseHints,
         )
         engine.onStart = {
             if (!terminalFailure && !recognitionEnded) emit(SpeechEvent.Listening)

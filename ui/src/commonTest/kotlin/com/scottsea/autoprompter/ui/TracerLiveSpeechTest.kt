@@ -1,6 +1,7 @@
 package com.scottsea.autoprompter.ui
 
 import com.scottsea.autoprompter.core.FollowMode
+import com.scottsea.autoprompter.core.parseScript
 import com.scottsea.autoprompter.core.speech.LiveSpeechPhase
 import com.scottsea.autoprompter.core.speech.Revision
 import com.scottsea.autoprompter.core.speech.SpeechEndReason
@@ -19,6 +20,23 @@ import kotlin.test.assertTrue
  * lifecycle/error events never move the prompt).
  */
 class TracerLiveSpeechTest {
+    @Test
+    fun phraseBiasUsesOnlyUpcomingBoundedScriptPhrases() {
+        val script =
+            parseScript(
+                (0 until 150).joinToString(" ") { index -> "word$index" },
+            )
+
+        assertEquals(
+            emptyList(),
+            speechPhraseHints(script, committedTokens = 10, enabled = false),
+        )
+        val hints = speechPhraseHints(script, committedTokens = 10, enabled = true)
+        assertEquals(32, hints.size)
+        assertEquals("word10 word11 word12 word13", hints.first())
+        assertEquals("word134 word135 word136 word137", hints.last())
+    }
+
 
     private fun hypothesis(
         utterance: Long,
@@ -37,6 +55,19 @@ class TracerLiveSpeechTest {
 
     /** A clean base: prompt at token 0, following, live state untouched. */
     private fun base(): TracerModel = reset(initialTracerModel())
+
+    @Test
+    fun warmupStartsWithoutMovingThePrompt() {
+        val initial = base()
+
+        val warming = beginSpeechWarmup(initial)
+
+        assertEquals(LiveSpeechPhase.Starting, warming.live.phase)
+        assertEquals(initial.session, warming.session)
+        assertTrue(speechIsWarming(openingRuntime = true, phase = LiveSpeechPhase.Idle))
+        assertTrue(speechIsWarming(openingRuntime = false, phase = LiveSpeechPhase.Starting))
+        assertEquals(false, speechIsWarming(false, LiveSpeechPhase.Listening))
+    }
 
     @Test
     fun lifecycleEventsUpdateOnlyLiveStateNotThePrompt() {

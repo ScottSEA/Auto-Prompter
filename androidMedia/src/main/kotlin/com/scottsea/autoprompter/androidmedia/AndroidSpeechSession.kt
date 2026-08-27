@@ -39,6 +39,9 @@ internal class AndroidSpeechSession(
     private val dispatcher: CoroutineDispatcher,
     private val scheduleCleanup: (() -> Unit) -> Unit,
     private val closeDispatcher: () -> Unit,
+    private val timeline: SpeechTimelineSink = NoopSpeechTimelineSink,
+    private val metrics: SpeechMetricsSink = NoopSpeechMetricsSink,
+    private val nanoClock: () -> Long = System::nanoTime,
 ) : SpeechSession {
     private val lifecycle = SpeechSessionLifecycle()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -67,12 +70,21 @@ internal class AndroidSpeechSession(
     private var revision: Revision? = null
     private var lastTranscript: String? = null
     private var lastFinal: Boolean? = null
+    private var sessionStartedNanos = 0L
+    private var captureStartedNanos = 0L
 
     override val events: Flow<SpeechEvent> = sink
 
     override suspend fun start() {
         check(!closed.get()) { "start() after close()." }
         lifecycle.onStart()
+        sessionStartedNanos = nanoClock()
+        metrics.record(
+            SpeechMetric.SessionStarting(
+                backend = SpeechBackend.SherpaOnDevice,
+                sessionId = id.value,
+            ),
+        )
         emit(SpeechEvent.Starting)
 
         val openedSource =
@@ -93,6 +105,22 @@ internal class AndroidSpeechSession(
             }
 
         emit(SpeechEvent.Listening)
+        captureStartedNanos = nanoClock()
+        timeline.mark(SpeechTimelineStage.CaptureStart, captureStartedNanos)
+        metrics.record(
+            SpeechMetric.CaptureStarted(
+                backend = SpeechBackend.SherpaOnDevice,
+                cycle = 0,
+                millisSinceSessionStart = nanosToMillis(captureStartedNanos - sessionStartedNanos),
+            ),
+        )
+        metrics.record(
+            SpeechMetric.CaptureReady(
+                backend = SpeechBackend.SherpaOnDevice,
+                cycle = 0,
+                startDelayMillis = nanosToMillis(captureStartedNanos - sessionStartedNanos),
+            ),
+        )
         captureJob = scope.launch { capture(openedSource) }
     }
 
@@ -160,6 +188,8 @@ internal class AndroidSpeechSession(
 
     private suspend fun capture(activeSource: Pcm16AudioSource) {
         val buffer = ShortArray(activeSource.preferredChunkSamples)
+        val audioMetrics = StreamingAudioMetricsAccumulator()
+        var windowStartedNanos = nanoClock()
         var failure: Throwable? = null
 
         try {
@@ -171,7 +201,28 @@ internal class AndroidSpeechSession(
                     )
                 }
                 if (count > 0) {
-                    emitSnapshot(engine.acceptPcm16(buffer, count, activeSource.sampleRate))
+                    val decodeStartedNanos = nanoClock()
+                    timeline.mark(SpeechTimelineStage.ChunkCaptured, decodeStartedNanos)
+                    timeline.mark(SpeechTimelineStage.DecodeBegin, decodeStartedNanos)
+                    val snapshot = engine.acceptPcm16(buffer, count, activeSource.sampleRate)
+                    val decodeEndedNanos = nanoClock()
+                    timeline.mark(SpeechTimelineStage.DecodeEnd, decodeEndedNanos)
+                    val emitted = emitSnapshot(snapshot)
+                    audioMetrics.add(
+                        samples = buffer,
+                        count = count,
+                        decodeNanos = decodeEndedNanos - decodeStartedNanos,
+                        hypothesisEmitted = emitted,
+                    )
+                    if (decodeEndedNanos - windowStartedNanos >= AUDIO_WINDOW_NANOS) {
+                        audioMetrics
+                            .snapshot(
+                                durationMillis = nanosToMillis(decodeEndedNanos - windowStartedNanos),
+                                backend = SpeechBackend.SherpaOnDevice,
+                            )?.let(metrics::record)
+                        audioMetrics.reset()
+                        windowStartedNanos = decodeEndedNanos
+                    }
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -179,6 +230,12 @@ internal class AndroidSpeechSession(
         } catch (caught: Throwable) {
             if (!closed.get() && !stopRequested.get()) failure = caught
         } finally {
+            val captureEndedNanos = nanoClock()
+            audioMetrics
+                .snapshot(
+                    durationMillis = nanosToMillis(captureEndedNanos - windowStartedNanos),
+                    backend = SpeechBackend.SherpaOnDevice,
+                )?.let(metrics::record)
             var shouldEmitStopped = false
             if (!closed.get()) {
                 shouldEmitStopped =
@@ -202,6 +259,14 @@ internal class AndroidSpeechSession(
                 fail(SpeechError.Unknown(cleanup.message))
             } else if (shouldEmitStopped && terminal.compareAndSet(false, true)) {
                 emit(SpeechEvent.Ended(SpeechEndReason.StoppedByRequest))
+                timeline.mark(SpeechTimelineStage.SessionEnded, captureEndedNanos)
+                metrics.record(
+                    SpeechMetric.SessionEnded(
+                        backend = SpeechBackend.SherpaOnDevice,
+                        reason = SpeechEndReason.StoppedByRequest.name,
+                        durationMillis = nanosToMillis(captureEndedNanos - sessionStartedNanos),
+                    ),
+                )
             }
         }
     }
@@ -215,10 +280,11 @@ internal class AndroidSpeechSession(
             false
         }
 
-    private fun emitSnapshot(snapshot: RecognizerSnapshot?) {
-        if (snapshot == null || closed.get() || terminal.get()) return
+    private fun emitSnapshot(snapshot: RecognizerSnapshot?): Boolean {
+        if (snapshot == null || closed.get() || terminal.get()) return false
 
         val changed = snapshot.transcript != lastTranscript || snapshot.isFinal != lastFinal
+        var emitted = false
         if (snapshot.transcript.isNotBlank() && changed) {
             val nextRevision = revision?.next() ?: Revision.FIRST
             revision = nextRevision
@@ -234,6 +300,20 @@ internal class AndroidSpeechSession(
                     ),
                 ),
             )
+            val now = nanoClock()
+            timeline.mark(SpeechTimelineStage.HypothesisEmitted, now)
+            metrics.record(
+                SpeechMetric.HypothesisEmitted(
+                    backend = SpeechBackend.SherpaOnDevice,
+                    cycle = null,
+                    utterance = utterance.value,
+                    revision = nextRevision.value,
+                    tokenCount = recognizedTokenCount(snapshot.transcript),
+                    isFinal = snapshot.isFinal,
+                    millisSinceCaptureStart = nanosToMillis(now - captureStartedNanos),
+                ),
+            )
+            emitted = true
         }
 
         if (snapshot.isFinal) {
@@ -242,11 +322,20 @@ internal class AndroidSpeechSession(
             lastTranscript = null
             lastFinal = null
         }
+        return emitted
     }
 
     private fun fail(error: SpeechError) {
         if (terminal.compareAndSet(false, true)) {
             emit(SpeechEvent.Failed(error))
+            timeline.mark(SpeechTimelineStage.SessionEnded, nanoClock())
+            metrics.record(
+                SpeechMetric.Failed(
+                    backend = SpeechBackend.SherpaOnDevice,
+                    error = error.metricName(),
+                    cycle = null,
+                ),
+            )
         }
     }
 
@@ -292,5 +381,6 @@ internal class AndroidSpeechSession(
         // The UI subscribes before start. Retain only the newest states for late/temporarily slow
         // collectors so stale partial hypotheses cannot create seconds of catch-up lag.
         const val EVENT_REPLAY = 2
+        const val AUDIO_WINDOW_NANOS = 1_000_000_000L
     }
 }

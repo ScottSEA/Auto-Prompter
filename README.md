@@ -16,11 +16,11 @@ unchanged on Android and in the browser, while optional developer scenarios exer
 | `:roomStore`         | KMP library (jvm, androidLibrary) | Durable Room 3 / SQLite `RoomDocumentStore` adapter for the `DocumentStore` seam, plus its `jvm()` / Android factory functions. Depends inward on `:core`; keeps Room/KSP codegen out of `:core` and `:ui`. |
 | `:webStore`          | KMP library (wasmJs) | Durable browser `IndexedDbDocumentStore` adapter for the `DocumentStore` seam over **IndexedDB** (via `com.juul.indexeddb`), plus its suspend `openIndexedDbDocumentStore(...)` factory. Depends inward on `:core`; keeps IndexedDB/JS interop out of `:core` and `:ui`. |
 | `:webSpeech`         | KMP library (wasmJs) | Capability-detected browser `LiveSpeechRuntime` adapter over the vendor **Web Speech API** (`SpeechRecognition` / `webkitSpeechRecognition`), plus its `browserLiveSpeechRuntime()` factory. Maps `onstart`/`onresult`/`onerror`/`onend` to the shared `SpeechEvent` stream behind an internal engine seam; no Web Speech types escape. Depends inward on `:core` only. |
-| `:androidMedia`      | Android library | Offline `LiveSpeechRuntime` adapter over one owned `AudioRecord` and sherpa-onnx streaming Zipformer, pinned model provisioning, and a crash-recoverable encoded-sample recording journal. Depends inward on `:core`; keeps Android audio, networking, storage, and sherpa/JNI types out of shared code. |
+| `:androidMedia`      | Android library | Native API 31+ on-device `SpeechRecognizer`, offline sherpa-onnx streaming fallback over one owned `AudioRecord`, pinned model provisioning, transcript-free latency instrumentation, per-device CPU/XNNPACK/NNAPI benchmarking, and a crash-recoverable encoded-sample recording journal. Depends inward on `:core`; keeps Android audio, networking, storage, and sherpa/JNI types out of shared code. |
 | `:androidBilling`    | Android library | Google Play Billing 9.1 adapter for one permanent non-consumable unlock, plus Android Keystore-backed tamper-evident offline cache. Depends inward on `:core`; Play types never cross into shared policy. |
 | `:driveSync`         | KMP library (jvm, androidLibrary, wasmJs) | No-CAS remote sync protocol built from immutable content-addressed revision DAGs, tombstones, explicit conflicts, strict manifests, an executable local/remote sync planner, and a small remote-object transport seam. Google auth/Drive REST adapters remain composition-root work. |
 | `:ui`                | KMP + Compose library (android, wasmJs) | Shared Compose prompt workspace with a distance-readable viewport, product-facing speech/editor/library controls, and optional developer scenarios. Dispatches all intent through `:core` reducers and takes injected persistence/speech adapters; holds no alignment, storage-construction, or recognition logic of its own. |
-| `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, owns the process-wide model installer, injects either the offline runtime or an explicit unsupported runtime, bridges Start-time microphone permission, and hosts the shared screen. |
+| `:androidApp`        | Android application                | Android launcher (`MainActivity`) that builds the Room-backed store, prefers native on-device speech, prepares the measured sherpa fallback, owns the process-wide model installer, bridges Start-time microphone permission and rendered-frame timing, and hosts the shared screen. |
 | `:webApp`            | Kotlin/Wasm Compose executable     | Browser composition root that opens the durable IndexedDB store, feature-detects and injects `browserLiveSpeechRuntime()`, and serves the shared screen. |
 
 Adapters (`:androidApp`, `:webApp`) depend inward on `:ui` -> `:core`; `:androidApp` also depends on
@@ -60,6 +60,48 @@ is named accordingly in `ScriptFollower.kt`. The aligner runs a
 bounded O(H*W) dynamic program (H hypothesis tokens, W the fixed local window), using rolling
 primitive arrays with no per-candidate allocation, so cost stays flat per update regardless of
 script length.
+
+## Android speech path and latency policy
+
+Android speech following is **automatic speech recognition (ASR), not an LLM or generative-AI
+request**. API 31+ prefers Android's explicitly on-device `SpeechRecognizer`; it never creates the
+network recognizer. One shared `SpeechSession` stays continuous across native single-utterance
+cycles: a final result or no-speech timeout schedules the next cycle on the main queue after a
+100 ms backoff, avoiding immediate recursive starts and `ERROR_RECOGNIZER_BUSY`. The UI remains in
+Listening between cycles. API 33+ receives up to 32 bounded upcoming-script phrase hints through
+`EXTRA_BIASING_STRINGS`; older APIs and OEMs that ignore the hint remain correct.
+
+If the OEM has no native on-device recognizer, Android uses the verified local sherpa-onnx
+Zipformer model. On the first run for a model revision and Android build fingerprint, a synthetic,
+user-content-free probe measures CPU, XNNPACK, and NNAPI. Initialization/decode failures are
+explicit outcomes; the fastest successful provider is cached in app-private preferences and reused.
+An Android build update or model revision invalidates that cache. The benchmark proves measured
+behavior only: whether an OEM runtime silently routes XNNPACK/NNAPI work back to CPU remains a
+physical-device question.
+
+Pressing `Start listening` first enters Starting and shows a recognizer warmup spinner. Native speech
+does not emit Listening until `onReadyForSpeech`; sherpa opens its model/audio resources before it
+reports readiness. The capture thread uses urgent-audio priority. Optional phrase bias, a bounded
+two-token predictive *visual* cursor, and the single-line Focus Strip are all off by default; the
+confirmed aligner position remains authoritative.
+
+Latency instrumentation records monotonic stage markers only: capture start, chunk, decode begin/end,
+hypothesis emission, first rendered Compose frame, and session end. It retains no transcript or
+audio. Android logs one first-response summary per session (`hypothesis-to-frame` and
+`capture-to-frame`) under `AutoPrompterSpeech`, allowing a real tablet trace to separate recognizer
+latency from UI latency.
+
+Android also maintains an asynchronous, rolling JSONL support log. One-second audio windows record
+microphone RMS/peak levels, capture cadence, sherpa decode averages/maxima, and hypothesis counts.
+Native recognition records ready/speech/final/no-speech timing plus every blind restart gap. Shared
+UI metrics record hypothesis token counts, stale-vs-accepted revisions, alignment advances/rejections,
+manual commands, preferences, and first rendered-frame latency. The schema cannot carry script text,
+transcript text, phrase hints, or audio samples.
+
+`Export diagnostics log` opens Android's document picker with a timestamped filename such as
+`AutoPrompter-diagnostics-20260826-152742-381.jsonl`. Save it to Downloads, Google Drive, OneDrive, or
+another document provider, then copy or attach that file for analysis. The rolling app-private log
+keeps the current and previous 2 MiB segments; exported snapshots include both.
 
 ## The prompt-session reducer
 
@@ -105,6 +147,16 @@ progress drives a pure `promptScrollDecision` policy. The active line stays near
 with a 10% dead band to prevent jitter. Top and bottom runway derive from the measured viewport and
 scaled line height, so the first and final lines can occupy the same reading horizon.
 
+The optional **Focus Strip** presents a bounded 25-token single-line window and horizontally centers
+the confirmed or predictive word without laying out the whole document. It supports mirrored and
+fullscreen prompting. The optional predictive cursor learns a bounded speaking rate and may lead
+the confirmed position by at most two words; it never mutates session progress.
+
+Compact windows use one scrollable workspace. At 900dp wide and 600dp high, the app becomes a two-pane
+presenter workspace: the prompt and transport controls remain visible on the left while speech,
+settings, commerce, and script tools scroll independently on the right. This avoids stretching a
+phone-shaped control stack across tablets and desktop browser windows.
+
 Touch/wheel scrolling immediately enters `ManualHold` and relayout never re-snaps a held prompt.
 Arrow and Page keys map to previous/next, Space or Enter toggles follow, and Home restarts.
 Presentation-remote and keyboard adapters emit the same platform-free `PromptRemoteCommand`s;
@@ -115,7 +167,10 @@ an old speech position.
 `Fullscreen` switches to an edge-to-edge Stage Black reading surface containing only the prompt and
 one safe-area-aware `Exit fullscreen` control in the lower-right. The live recognizer is owned above
 that visual switch, so entering fullscreen never closes the microphone or stops hypotheses; prompt
-position, manual hold, keyboard, and presentation-remote behavior continue unchanged.
+position, manual hold, keyboard, and presentation-remote behavior continue unchanged. Android system
+Back and desktop Escape leave fullscreen before navigating away. Both normal and fullscreen prompt
+content are measured *inside* `WindowInsets.safeDrawing`; the workspace also consumes IME insets, so
+system bars, cutouts, gesture regions, and the software keyboard do not cover text or controls.
 
 `PRODUCT.md` and `DESIGN.md` define the focused, calm, professional product direction and the
 "Quiet Stage" visual system. Developer scenario and simulated-transcript controls are hidden by
@@ -123,11 +178,16 @@ default behind `showDeveloperTools`; production launch surfaces use plain produc
 
 ## Durable prompt settings
 
-Prompt display preferences use one strict schema-v1 `PromptPreferences` model:
+Prompt display preferences use one strict schema-v2 `PromptPreferences` model:
 
 - font scale from 75% to 200%,
 - reading horizon from 25% to 60% from the top, and
-- horizontal mirror mode for beam-splitter/reflective rigs.
+- horizontal mirror mode for beam-splitter/reflective rigs,
+- optional predictive cursor,
+- optional single-line Focus Strip, and
+- optional recognizer phrase bias.
+
+Schema-v1 values migrate strictly with all three new options disabled.
 
 The shared workspace disables settings controls until durable state loads, so startup cannot
 overwrite an immediate user edit. Updates are coalesced through one serialized writer; blocking
@@ -300,18 +360,14 @@ generation no-op-vs-effective semantics, block kind change, insert/delete/move (
 the `NoBlocks`-on-empty rule), the save-seam round trip and typed rejection, the
 dirty/stale/session-scoped acknowledgement rules, defensive aliasing, and the generation-overflow guard.
 
-The tracer hosts a **clearly labelled diagnostic editor section** over this reducer: title and
-first-block text fields plus deterministic controls to append a paragraph, remove or move a block,
-`Apply to prompt` (enabled only when the draft validates -- it obtains the validated document
-through the shared save seam, replaces `TracerModel.document`, and restarts `PromptSession` from
-`document.toScript()`, preserving the editor draft), and a `Save to library` control that persists
-the validated document through the shared `DocumentStore` (see below) and, **only after the store
-confirms**, acknowledges the current generation so the editor returns to clean. A companion
-reference-library section lists saved entries with their generations and offers `Select`, `Load`
-(restart editor + prompt from the saved snapshot under a fresh `EditorSessionId`), and
-`Delete selected`. This section is **shared Compose for diagnostics only**; per the architecture
-the production web editor remains a DOM island. The injected `DocumentStore` behind it is durable on
-both platforms (Room on Android, IndexedDB on web).
+The shared workspace hosts a product-facing editor over this reducer: title plus every heading and
+paragraph, `Update prompt` (enabled only when the draft validates), and `Save script`, which persists
+through the shared `DocumentStore` and acknowledges the editor only after the store confirms. Block
+mutation controls remain developer-only until richer editing interactions arrive. The saved-script
+list opens a document under a fresh `EditorSessionId`, reports optimistic conflicts in plain language,
+and requires confirmation before deletion. The injected store is durable on both platforms (Room on
+Android, IndexedDB on web); the future production web editor may still move to a DOM island without
+changing the reducer or storage seams.
 Scenario selection replaces editor, document, and session together from the same canonical
 document while preserving the store-backed library state; Reset resets prompting only and leaves
 the editor draft untouched.

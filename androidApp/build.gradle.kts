@@ -85,6 +85,7 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.uiToolingPreview)
     implementation(libs.kotlinx.coroutines.core)
+    testImplementation(kotlin("test-junit"))
     debugImplementation(libs.compose.uiTooling)
 }
 

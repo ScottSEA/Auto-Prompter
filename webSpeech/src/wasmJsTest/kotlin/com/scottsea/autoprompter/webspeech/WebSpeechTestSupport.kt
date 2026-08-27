@@ -33,6 +33,8 @@ internal class FakeSpeechRecognitionEngine : SpeechRecognitionEngine {
         private set
     var lastProcessLocally: Boolean? = null
         private set
+    var lastPhraseHints: List<String> = emptyList()
+        private set
     var startCalls = 0
         private set
     var startFailure: Throwable? = null
@@ -49,6 +51,7 @@ internal class FakeSpeechRecognitionEngine : SpeechRecognitionEngine {
         interimResults: Boolean,
         maxAlternatives: Int,
         processLocally: Boolean,
+        phraseHints: List<String>,
     ) {
         configureCalls += 1
         lastLanguage = language
@@ -56,6 +59,7 @@ internal class FakeSpeechRecognitionEngine : SpeechRecognitionEngine {
         lastInterim = interimResults
         lastMaxAlternatives = maxAlternatives
         lastProcessLocally = processLocally
+        lastPhraseHints = phraseHints.toList()
     }
 
     override fun start() {

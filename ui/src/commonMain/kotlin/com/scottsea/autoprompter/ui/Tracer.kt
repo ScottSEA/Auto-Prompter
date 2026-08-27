@@ -4,6 +4,7 @@ import com.scottsea.autoprompter.core.FollowMode
 import com.scottsea.autoprompter.core.PromptSessionAction
 import com.scottsea.autoprompter.core.PromptSessionState
 import com.scottsea.autoprompter.core.PromptRemoteCommand
+import com.scottsea.autoprompter.core.Script
 import com.scottsea.autoprompter.core.hypothesisOf
 import com.scottsea.autoprompter.core.reducePromptSession
 import com.scottsea.autoprompter.core.startPromptSession
@@ -31,6 +32,7 @@ import com.scottsea.autoprompter.core.document.store.SavePrecondition
 import com.scottsea.autoprompter.core.document.store.StoredDocument
 import com.scottsea.autoprompter.core.document.toScript
 import com.scottsea.autoprompter.core.speech.LiveSpeechState
+import com.scottsea.autoprompter.core.speech.LiveSpeechPhase
 import com.scottsea.autoprompter.core.speech.SpeechEvent
 import com.scottsea.autoprompter.core.speech.foldSpeechEvent
 
@@ -249,6 +251,31 @@ fun revise(model: TracerModel): TracerModel {
 fun foldLiveSpeech(model: TracerModel, event: SpeechEvent): TracerModel {
     val folded = foldSpeechEvent(model.session, model.live, event)
     return model.copy(session = folded.session, live = folded.live)
+}
+
+fun beginSpeechWarmup(model: TracerModel): TracerModel =
+    foldLiveSpeech(model, SpeechEvent.Starting)
+
+fun speechIsWarming(
+    openingRuntime: Boolean,
+    phase: LiveSpeechPhase,
+): Boolean = openingRuntime || phase == LiveSpeechPhase.Starting
+
+fun speechPhraseHints(
+    script: Script,
+    committedTokens: Int,
+    enabled: Boolean,
+): List<String> {
+    require(committedTokens in 0..script.tokenCount) {
+        "Committed token position $committedTokens must be within 0..${script.tokenCount}."
+    }
+    if (!enabled) return emptyList()
+    return script.tokens
+        .drop(committedTokens)
+        .take(128)
+        .chunked(4)
+        .map { chunk -> chunk.joinToString(" ") { token -> token.normalized } }
+        .take(32)
 }
 
 /** Presentation-remote nudge one token forward (enters manual hold). */

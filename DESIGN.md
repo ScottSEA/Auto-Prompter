@@ -204,15 +204,33 @@ heavy shadow.
 ### Navigation
 - Use familiar tabs or a compact top bar when the product grows beyond one workspace. Active state
   uses weight, text, and a restrained cue marker; navigation never overlays the prompt during use.
+- Compact windows use one scrollable column. Tablet and desktop widths use a persistent two-pane
+  workspace so the prompt remains visible while script and speech tools scroll independently.
+
+### Settings
+- Boolean prompt options use full-row Material switches with a concise explanation, not action
+  buttons whose label describes the opposite future state.
+- Destructive saved-script actions require a named confirmation dialog.
+- Speech support exposes one secondary `Export diagnostics log` action. Its helper text states that
+  the timestamped file contains timing, levels, lifecycle states, and counts—but no scripts,
+  transcripts, or audio.
 
 ### Prompt Surface
 - Stage Black background, Stage White current/ahead copy, and Passed Copy for completed text.
 - The reading horizon stays around 40% from the top. Follow scrolling moves only outside a dead band.
 - Speech-follow corrections snap to the new horizon without animation; recognition latency must not
   be compounded by decorative motion.
+- Starting speech shows a compact warmup spinner and does not tell the presenter to speak until the
+  recognizer reports Listening.
+- The optional predictive cursor may lead by at most two words and is visual only; confirmed speech
+  progress remains authoritative.
+- The optional Focus Strip is one line with bounded surrounding context, centered on the active word.
+  It must never lay out the entire script as one unbounded line.
 - Touch or hardware navigation enters Manual Hold immediately; resuming never jumps backward.
 - Fullscreen expands Stage Black edge-to-edge and removes every workspace element except the prompt
   and one outlined, 48dp `Exit fullscreen` control in the lower-right safe area.
+- Prompt copy, its measured viewport, and fullscreen controls respect platform safe-drawing insets;
+  system bars, display cutouts, and gesture regions never obscure the reading surface.
 - Speech following and hardware controls remain active when the workspace chrome is hidden.
 
 ## 6. Do's and Don'ts

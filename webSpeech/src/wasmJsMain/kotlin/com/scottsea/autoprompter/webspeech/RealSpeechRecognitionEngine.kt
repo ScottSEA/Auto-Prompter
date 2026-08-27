@@ -26,6 +26,7 @@ internal class RealSpeechRecognitionEngine(private val recognition: JsAny) : Spe
         interimResults: Boolean,
         maxAlternatives: Int,
         processLocally: Boolean,
+        phraseHints: List<String>,
     ) {
         configureRecognition(
             recognition,
@@ -34,6 +35,7 @@ internal class RealSpeechRecognitionEngine(private val recognition: JsAny) : Spe
             interimResults,
             maxAlternatives,
             processLocally,
+            phraseHints.joinToString(PHRASE_SEPARATOR),
         )
         attach()
     }
@@ -123,10 +125,13 @@ private external fun newStandardSpeechRecognition(): JsAny
 private external fun newWebkitSpeechRecognition(): JsAny
 
 @JsFun(
-    "(rec, lang, continuous, interim, maxAlt, local) => { " +
+    "(rec, lang, continuous, interim, maxAlt, local, phraseText) => { " +
         "rec.lang = lang; rec.continuous = continuous; rec.interimResults = interim; " +
         "rec.maxAlternatives = maxAlt; " +
-        "if ('processLocally' in rec) rec.processLocally = local; }",
+        "if ('processLocally' in rec) rec.processLocally = local; " +
+        "if ('phrases' in rec && typeof SpeechRecognitionPhrase === 'function') { " +
+        "rec.phrases = phraseText ? phraseText.split('\\u001f').map((phrase) => " +
+        "new SpeechRecognitionPhrase(phrase, 5.0)) : []; } }",
 )
 private external fun configureRecognition(
     rec: JsAny,
@@ -135,6 +140,7 @@ private external fun configureRecognition(
     interim: Boolean,
     maxAlt: Int,
     processLocally: Boolean,
+    phraseText: String,
 )
 
 @JsFun("(rec) => rec.start()")
@@ -181,3 +187,5 @@ private external fun isFinalAt(e: JsAny, i: Int): Boolean
         "return (typeof c === 'number' && isFinite(c)) ? c : NaN; }",
 )
 private external fun confidenceAt(e: JsAny, i: Int): Double
+
+private const val PHRASE_SEPARATOR = "\u001f"

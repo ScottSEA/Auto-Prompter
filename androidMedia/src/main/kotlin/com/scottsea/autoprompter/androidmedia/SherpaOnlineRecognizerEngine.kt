@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Thin PCM16 adapter over sherpa-onnx's local streaming OnlineRecognizer. */
 internal class SherpaOnlineRecognizerEngine(
     model: InstalledSpeechModel,
+    provider: SherpaProvider = SherpaProvider.Cpu,
 ) : StreamingRecognizerEngine {
     private val recognizer: OnlineRecognizer
     private val stream: OnlineStream
@@ -18,29 +19,7 @@ internal class SherpaOnlineRecognizerEngine(
     private var waveformBuffer = FloatArray(0)
 
     init {
-        val config =
-            OnlineRecognizerConfig(
-                featConfig = FeatureConfig(sampleRate = model.pack.sampleRate, featureDim = 80),
-                modelConfig =
-                    OnlineModelConfig(
-                        transducer =
-                            OnlineTransducerModelConfig(
-                                encoder = model.file("encoder-epoch-99-avg-1.int8.onnx").absolutePath,
-                                decoder = model.file("decoder-epoch-99-avg-1.onnx").absolutePath,
-                                joiner = model.file("joiner-epoch-99-avg-1.int8.onnx").absolutePath,
-                            ),
-                        tokens = model.file("tokens.txt").absolutePath,
-                        numThreads =
-                            recognizerThreadCount(
-                                Runtime.getRuntime().availableProcessors(),
-                            ),
-                        debug = false,
-                        provider = "cpu",
-                    ),
-                enableEndpoint = true,
-                decodingMethod = "greedy_search",
-                maxActivePaths = 4,
-            )
+        val config = onlineRecognizerConfig(model, provider = provider.configValue)
         recognizer = OnlineRecognizer(assetManager = null, config = config)
         stream = recognizer.createStream()
     }
@@ -99,6 +78,39 @@ internal class SherpaOnlineRecognizerEngine(
 
 internal fun recognizerThreadCount(availableProcessors: Int): Int =
     availableProcessors.coerceIn(1, 4)
+
+/**
+ * Builds the sherpa-onnx streaming recognizer config for [model], selecting the ONNX Runtime
+ * execution [provider] (`"cpu"`, `"xnnpack"`, or `"nnapi"` — see [SherpaProvider]). Shared by the
+ * production engine and [SherpaProviderProbeAdapter] so the benchmark configures a genuinely
+ * identical recognizer, differing only by provider.
+ */
+internal fun onlineRecognizerConfig(
+    model: InstalledSpeechModel,
+    provider: String,
+): OnlineRecognizerConfig =
+    OnlineRecognizerConfig(
+        featConfig = FeatureConfig(sampleRate = model.pack.sampleRate, featureDim = 80),
+        modelConfig =
+            OnlineModelConfig(
+                transducer =
+                    OnlineTransducerModelConfig(
+                        encoder = model.file("encoder-epoch-99-avg-1.int8.onnx").absolutePath,
+                        decoder = model.file("decoder-epoch-99-avg-1.onnx").absolutePath,
+                        joiner = model.file("joiner-epoch-99-avg-1.int8.onnx").absolutePath,
+                    ),
+                tokens = model.file("tokens.txt").absolutePath,
+                numThreads =
+                    recognizerThreadCount(
+                        Runtime.getRuntime().availableProcessors(),
+                    ),
+                debug = false,
+                provider = provider,
+            ),
+        enableEndpoint = true,
+        decodingMethod = "greedy_search",
+        maxActivePaths = 4,
+    )
 
 internal fun pcm16ToFloat(
     samples: ShortArray,

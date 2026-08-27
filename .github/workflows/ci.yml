@@ -43,6 +43,7 @@ jobs:
             :ui:jvmTest \
             :roomStore:jvmTest \
             :androidMedia:testDebugUnitTest \
+            :androidApp:testDebugUnitTest \
             :androidBilling:testDebugUnitTest \
             :androidBilling:assembleDebug \
             :driveSync:jvmTest \

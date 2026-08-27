@@ -252,7 +252,35 @@ class AndroidSpeechSessionTest {
         runCurrent()
     }
 
-    private fun TestScope.fixture(source: FakeAudioSource = FakeAudioSource()): Fixture {
+    @Test
+    fun metricsExposeAudioLevelDecodeAndHypothesisCountsWithoutTranscript() = speechTest {
+        var now = 0L
+        val metrics = RecordingSpeechMetricsSink()
+        val fixture = fixture(metrics = metrics, nanoClock = { now })
+        val collector = EventCollector(this, fixture.session)
+        fixture.session.start()
+        fixture.engine.queue(RecognizerSnapshot("private spoken words", isFinal = false))
+        now = 1_100_000_000L
+        fixture.source.push(shortArrayOf(1_000, -2_000, 3_000))
+        runCurrent()
+        fixture.session.stop()
+        runCurrent()
+
+        val audio = metrics.metrics.filterIsInstance<SpeechMetric.AudioWindow>().first()
+        assertEquals(3L, audio.sampleCount)
+        assertTrue(audio.peakDb > audio.averageRmsDb)
+        assertEquals(1, audio.hypothesesEmitted)
+        assertTrue(metrics.metrics.none { it.toString().contains("private") })
+
+        collector.stop()
+        fixture.session.close()
+    }
+
+    private fun TestScope.fixture(
+        source: FakeAudioSource = FakeAudioSource(),
+        metrics: SpeechMetricsSink = NoopSpeechMetricsSink,
+        nanoClock: () -> Long = System::nanoTime,
+    ): Fixture {
         val engine = FakeRecognizerEngine()
         val dispatcher = UnconfinedTestDispatcher(testScheduler)
         val session =
@@ -263,6 +291,8 @@ class AndroidSpeechSessionTest {
                 dispatcher = dispatcher,
                 scheduleCleanup = { cleanup -> cleanup() },
                 closeDispatcher = {},
+                metrics = metrics,
+                nanoClock = nanoClock,
             )
         return Fixture(session, source, engine)
     }

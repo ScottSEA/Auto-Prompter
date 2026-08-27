@@ -6,7 +6,33 @@ import kotlinx.coroutines.flow.Flow
  * How a session should be opened: the language to recognize. This is intentionally tiny now; future
  * fields (alternatives, phrase hints, profanity policy) belong to the combined live-session plan.
  */
-data class SpeechSessionPlan(val language: LanguageTag)
+class SpeechSessionPlan(
+    val language: LanguageTag,
+    phraseHints: Collection<String> = emptyList(),
+) {
+    private val phraseHintSnapshot = phraseHints.map(String::trim)
+    val phraseHints: List<String> get() = phraseHintSnapshot.toList()
+
+    init {
+        require(phraseHintSnapshot.size <= MAX_PHRASE_HINTS) {
+            "Speech session supports at most $MAX_PHRASE_HINTS phrase hints."
+        }
+        require(phraseHintSnapshot.all(String::isNotBlank)) {
+            "Speech phrase hints must not be blank."
+        }
+    }
+
+    override fun equals(other: Any?): Boolean =
+        other is SpeechSessionPlan &&
+            language == other.language &&
+            phraseHintSnapshot == other.phraseHintSnapshot
+
+    override fun hashCode(): Int = 31 * language.hashCode() + phraseHintSnapshot.hashCode()
+
+    private companion object {
+        const val MAX_PHRASE_HINTS = 32
+    }
+}
 
 /**
  * A shared, platform-free seam for live speech recognition.

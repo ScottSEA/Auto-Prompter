@@ -25,6 +25,7 @@ internal class LocalFirstSpeechRecognitionEngine(
         interimResults: Boolean,
         maxAlternatives: Int,
         processLocally: Boolean,
+        phraseHints: List<String>,
     ) {
         check(!detached) { "Cannot configure a detached speech engine." }
         configuration =
@@ -33,6 +34,7 @@ internal class LocalFirstSpeechRecognitionEngine(
                 continuous,
                 interimResults,
                 maxAlternatives,
+                phraseHints,
             )
         usingLocal = processLocally
         configureCurrent(processLocally)
@@ -83,6 +85,7 @@ internal class LocalFirstSpeechRecognitionEngine(
             interimResults = config.interimResults,
             maxAlternatives = config.maxAlternatives,
             processLocally = processLocally,
+            phraseHints = config.phraseHints,
         )
     }
 
@@ -105,6 +108,7 @@ internal class LocalFirstSpeechRecognitionEngine(
         val continuous: Boolean,
         val interimResults: Boolean,
         val maxAlternatives: Int,
+        val phraseHints: List<String>,
     )
 
     private companion object {

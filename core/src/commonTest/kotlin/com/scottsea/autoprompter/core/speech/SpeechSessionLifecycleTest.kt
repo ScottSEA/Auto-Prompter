@@ -10,6 +10,21 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SpeechSessionLifecycleTest {
+    @Test
+    fun sessionPlanSnapshotsBoundedNonBlankPhraseHints() {
+        val source = mutableListOf("one two", "three four")
+        val plan = SpeechSessionPlan(LanguageTag("en-US"), source)
+        source.clear()
+
+        assertEquals(listOf("one two", "three four"), plan.phraseHints)
+        assertFailsWith<IllegalArgumentException> {
+            SpeechSessionPlan(LanguageTag("en-US"), listOf(" "))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            SpeechSessionPlan(LanguageTag("en-US"), List(33) { "phrase $it" })
+        }
+    }
+
 
     @Test
     fun freshMachineStartsOpenedThenListens() {

@@ -48,6 +48,54 @@ class PromptViewportTest {
     }
 
     @Test
+    fun predictiveHighlightDoesNotMarkUnconfirmedWordsPassed() {
+        val model = promptTextModel(parseScript("one two three four"))
+
+        val highlighted =
+            promptAnnotatedText(
+                model = model,
+                committedTokens = 1,
+                highlightedToken = 3,
+            )
+
+        assertEquals(0, highlighted.spanStyles[0].start)
+        assertEquals(4, highlighted.spanStyles[0].end)
+        assertEquals(14, highlighted.spanStyles[1].start)
+        assertEquals(18, highlighted.spanStyles[1].end)
+    }
+
+    @Test
+    fun focusStripKeepsBoundedContextAroundPredictiveWord() {
+        val script = parseScript((0 until 50).joinToString(" ") { "word$it" })
+
+        val window =
+            focusStripWindow(
+                script = script,
+                confirmedTokens = 20,
+                highlightedToken = 22,
+            )
+
+        assertEquals("word10", window.textModel.text.substringBefore(" "))
+        assertEquals("word34", window.textModel.text.substringAfterLast(" "))
+        assertEquals(10, window.confirmedTokens)
+        assertEquals(12, window.highlightedToken)
+    }
+
+    @Test
+    fun focusStripHandlesStartAndCompletedScript() {
+        val script = parseScript("one two three")
+
+        val start = focusStripWindow(script, confirmedTokens = 0, highlightedToken = 0)
+        val complete = focusStripWindow(script, confirmedTokens = 3, highlightedToken = 3)
+
+        assertEquals("one two three", start.textModel.text)
+        assertEquals(0, start.confirmedTokens)
+        assertEquals(0, start.highlightedToken)
+        assertEquals(3, complete.confirmedTokens)
+        assertEquals(3, complete.highlightedToken)
+    }
+
+    @Test
     fun emptyScriptHasStableZeroOffset() {
         assertEquals(0, promptCharacterOffset(parseScript(""), 0))
     }

@@ -50,6 +50,7 @@ class BrowserLiveSpeechRuntime internal constructor(
             engine = factory(processLocally),
             language = plan.language.value,
             processLocally = processLocally,
+            phraseHints = plan.phraseHints,
         )
     }
 

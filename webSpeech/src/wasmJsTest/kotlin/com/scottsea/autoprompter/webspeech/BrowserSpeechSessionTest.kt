@@ -81,6 +81,23 @@ class BrowserSpeechSessionTest {
     }
 
     @Test
+    fun phraseHintsReachTheRecognitionEngine() = webSpeechTest {
+        val engine = FakeSpeechRecognitionEngine()
+        val runtime = browserLiveSpeechRuntimeForTest(engineFactory = { engine })
+
+        val session =
+            runtime.open(
+                SpeechSessionPlan(
+                    language = LanguageTag("en-US"),
+                    phraseHints = listOf("upcoming script phrase"),
+                ),
+            )
+
+        assertEquals(listOf("upcoming script phrase"), engine.lastPhraseHints)
+        session.close()
+    }
+
+    @Test
     fun startEmitsStartingThenListeningAndCallsEngineStart() = webSpeechTest {
         val engine = FakeSpeechRecognitionEngine()
         val session = openSession(engine)

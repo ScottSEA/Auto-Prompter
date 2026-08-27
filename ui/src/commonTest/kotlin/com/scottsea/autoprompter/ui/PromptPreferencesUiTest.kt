@@ -25,4 +25,23 @@ class PromptPreferencesUiTest {
             togglePromptMirror(initial),
         )
     }
+
+    @Test
+    fun optionalModeTogglesAreIndependent() {
+        val initial = PromptPreferences.DEFAULT
+
+        val predictive = togglePredictiveCursor(initial)
+        val focusStrip = toggleFocusStrip(predictive)
+        val phraseBias = togglePhraseBias(focusStrip)
+
+        assertEquals(true, predictive.predictiveCursorEnabled)
+        assertEquals(false, predictive.focusStripEnabled)
+        assertEquals(false, predictive.phraseBiasEnabled)
+        assertEquals(true, focusStrip.predictiveCursorEnabled)
+        assertEquals(true, focusStrip.focusStripEnabled)
+        assertEquals(false, focusStrip.phraseBiasEnabled)
+        assertEquals(true, phraseBias.predictiveCursorEnabled)
+        assertEquals(true, phraseBias.focusStripEnabled)
+        assertEquals(true, phraseBias.phraseBiasEnabled)
+    }
 }

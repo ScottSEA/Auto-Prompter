@@ -12,6 +12,9 @@ class PromptPreferencesTest {
                 fontScale = 1f,
                 readingHorizonFraction = 0.40f,
                 mirrorHorizontally = false,
+                predictiveCursorEnabled = false,
+                focusStripEnabled = false,
+                phraseBiasEnabled = false,
             ),
             PromptPreferences.DEFAULT,
         )
@@ -34,12 +37,33 @@ class PromptPreferencesTest {
                 fontScale = 1.5f,
                 readingHorizonFraction = 0.35f,
                 mirrorHorizontally = true,
+                predictiveCursorEnabled = true,
+                focusStripEnabled = true,
+                phraseBiasEnabled = true,
             )
         val encoded = encodePromptPreferences(preferences)
 
         assertEquals(preferences, decodePromptPreferences(encoded))
         assertFailsWith<Exception> {
-            decodePromptPreferences(encoded.replace("\"schemaVersion\":1,", ""))
+            decodePromptPreferences(encoded.replace(Regex("\"schemaVersion\":\\d+,"), ""))
         }
+    }
+
+    @Test
+    fun schemaOneMigratesWithNewModesDisabled() {
+        val legacy =
+            """{"schemaVersion":1,"fontScale":1.25,"readingHorizonFraction":0.45,"mirrorHorizontally":true}"""
+
+        assertEquals(
+            PromptPreferences(
+                fontScale = 1.25f,
+                readingHorizonFraction = 0.45f,
+                mirrorHorizontally = true,
+                predictiveCursorEnabled = false,
+                focusStripEnabled = false,
+                phraseBiasEnabled = false,
+            ),
+            decodePromptPreferences(legacy),
+        )
     }
 }

@@ -42,6 +42,7 @@ internal interface SpeechRecognitionEngine {
         interimResults: Boolean,
         maxAlternatives: Int,
         processLocally: Boolean,
+        phraseHints: List<String>,
     )
 
     /** Begins recognition. Invoked synchronously from the session's start so a user gesture is preserved. */

@@ -1,13 +1,16 @@
 package com.scottsea.autoprompter.ui
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.dp
 
 internal object AutoPrompterPalette {
     val ShellBackground = Color(0xFFFFFFFF)
@@ -96,11 +99,21 @@ private val AutoPrompterTypography =
             ),
     )
 
+private val AutoPrompterShapes =
+    Shapes(
+        extraSmall = RoundedCornerShape(8.dp),
+        small = RoundedCornerShape(8.dp),
+        medium = RoundedCornerShape(12.dp),
+        large = RoundedCornerShape(20.dp),
+        extraLarge = RoundedCornerShape(12.dp),
+    )
+
 @Composable
 internal fun AutoPrompterTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = AutoPrompterColorScheme,
         typography = AutoPrompterTypography,
+        shapes = AutoPrompterShapes,
         content = content,
     )
 }
